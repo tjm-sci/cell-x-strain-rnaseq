@@ -1,0 +1,4 @@
+/home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna/rfam-5.8s-database-id98.fasta
+/home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna/rfam-5s-database-id98.fasta
+/home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna/silva-euk-18s-id95.fasta
+/home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna/silva-euk-28s-id98.fasta

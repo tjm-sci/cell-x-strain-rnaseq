@@ -1,0 +1,22 @@
+name: rnaseq
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # Core workflow runtime
+  # Nextflow docs require Java 17 or later.
+  - openjdk=17
+  - nextflow
+  - graphviz
+
+  # DEA / downstream analysis runtime
+  - r-base=4.5
+
+  # Bioconductor packages used by the current DEA scripts
+  - bioconductor-tximport
+  - bioconductor-deseq2
+  - bioconductor-summarizedexperiment
+
+  # Plotting and report-friendly tables
+  - r-ggplot2
+  - r-pheatmap

@@ -1,0 +1,31 @@
+input: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/metadata/exp383_nfcore_rnaseq_samplesheet_template.csv
+outdir: /media/tmurphy/4TB_HDD/exp383/nfcore_rnaseq
+
+trimmer: fastp
+remove_ribo_rna: true
+ribo_removal_tool: bowtie2
+ribo_database_manifest: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna_eukaryote_manifest.txt
+
+pseudo_aligner: salmon
+skip_alignment: true
+save_reference: true
+save_merged_fastq: false
+save_trimmed: false
+save_non_ribo_reads: false
+
+# Reference locked for this project: Ensembl release 115 / GRCm39.
+fasta: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/reference/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz
+gtf: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/reference/Mus_musculus.GRCm39.115.gtf.gz
+
+# Recommended for Salmon and explicitly not enabled by default by nf-core/rnaseq.
+extra_salmon_quant_args: "--seqBias --gcBias"
+
+# Leave this unset unless all libraries truly share one known type.
+# salmon_quant_libtype: A
+
+# Optional if you want custom non-default SortMeRNA/Bowtie2 references.
+# ribo_database_manifest: /absolute/path/to/ribo_database_manifest.txt
+
+# Optional if you want to reuse an already built Salmon index.
+# salmon_index: /absolute/path/to/salmon_index
+# transcript_fasta: /absolute/path/to/transcripts.fa.gz

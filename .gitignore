@@ -1,0 +1,26 @@
+# Local Codex state
+.codex
+
+# Nextflow runtime state and logs
+.nextflow*
+work/
+logs/nextflow/*
+!logs/nextflow/.gitkeep
+logs/backup/
+logs/concat/
+
+# Pipeline and DEA outputs
+results/
+reports/
+
+# Generated metadata products
+metadata/batches/
+metadata/exp383_merged_fastq_manifest.csv
+metadata/exp383_nfcore_rnaseq_lane_wise_samplesheet.csv
+
+# Large imported QC artefacts
+MultiQC_Report_PRJ25147.html
+
+# Downloaded reference assets
+resources/reference/*.fa.gz
+resources/reference/*.gtf.gz
