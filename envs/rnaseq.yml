@@ -16,7 +16,13 @@ dependencies:
   - bioconductor-tximport
   - bioconductor-deseq2
   - bioconductor-summarizedexperiment
+  - bioconductor-limma
+  - bioconductor-variancepartition
 
   # Plotting and report-friendly tables
+  - r-dplyr
   - r-ggplot2
   - r-pheatmap
+  - r-stringr
+  - r-tibble
+  - r-tidyr

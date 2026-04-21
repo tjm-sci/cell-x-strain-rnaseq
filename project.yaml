@@ -13,7 +13,7 @@ samplesheet_status: merged_fastq_paths_populated
 trimmer: fastp
 remove_ribo_rna: true
 ribo_removal_tool: bowtie2
-ribo_database_manifest: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/sortmerna_eukaryote_manifest.txt
+ribo_database_manifest: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/eukaryote_rrna_manifest.txt
 pseudo_aligner: salmon
 skip_alignment: true
 reference_source: ensembl

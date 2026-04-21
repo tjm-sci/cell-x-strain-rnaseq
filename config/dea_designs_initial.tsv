@@ -1,0 +1,6 @@
+design_id	design_formula
+group_only	~ group_assignment
+batch_plus_group	~ inoculation_batch + group_assignment
+mass_plus_group	~ sample_mass_mg_z + group_assignment
+incubation_plus_group	~ incubation_time_hrs_z + group_assignment
+prep_day_plus_group	~ date_nuc_prep_days_z + group_assignment

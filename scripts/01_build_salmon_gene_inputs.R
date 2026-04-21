@@ -9,8 +9,9 @@
 #
 # 1. every sample has its Salmon quant.sf file recorded
 # 2. metadata are cleaned and aligned to those quant files
-# 3. tximport has been run once in a reproducible way
-# 4. the resulting object is saved for later scripts
+# 3. sample-level QC metrics from nf-core/MultiQC are attached once
+# 4. tximport has been run once in a reproducible way
+# 5. the resulting object is saved for later scripts
 #
 # This script deliberately does NOT perform DEA, differential filtering, or
 # model fitting. Those steps are left to later scripts so that design formulas
@@ -96,7 +97,7 @@ write_tsv <- function(x, path) {
 # types explicit here so later DEA scripts do not need to guess them.
 clean_metadata <- function(metadata) {
   required_columns <- c(
-    "sample", "population", "inoculum", "dpi", "group_assignment",
+    "sample", "mouse_n", "population", "inoculum", "dpi", "group_assignment",
     "inoculation_batch", "sample_mass_mg", "date_nuc_prep",
     "incubation_time_hrs"
   )
@@ -144,6 +145,32 @@ clean_metadata <- function(metadata) {
     metadata$date_nuc_prep_days <- as.integer(prep_dates - min(prep_dates, na.rm = TRUE))
   }
 
+  # Provide centered/scaled numeric covariates once here so later design files
+  # can use stable, model-friendly column names instead of repeating ad hoc
+  # scaling inside every analysis script.
+  scale_numeric_covariate <- function(x) {
+    x <- as.numeric(x)
+    out <- rep(NA_real_, length(x))
+
+    keep <- !is.na(x)
+    if (!any(keep)) {
+      return(out)
+    }
+
+    x_keep <- x[keep]
+    if (stats::sd(x_keep) == 0) {
+      out[keep] <- 0
+      return(out)
+    }
+
+    out[keep] <- as.numeric(scale(x_keep))
+    out
+  }
+
+  metadata$sample_mass_mg_z <- scale_numeric_covariate(metadata$sample_mass_mg)
+  metadata$incubation_time_hrs_z <- scale_numeric_covariate(metadata$incubation_time_hrs)
+  metadata$date_nuc_prep_days_z <- scale_numeric_covariate(metadata$date_nuc_prep_days)
+
   metadata
 }
 
@@ -181,6 +208,103 @@ discover_quant_files <- function(results_root) {
   }
 
   manifest[order(manifest$sample), , drop = FALSE]
+}
+
+# nf-core writes a compact, tabular summary of per-sample QC metrics into each
+# batch MultiQC directory. These are exactly the kind of technical covariates we
+# want to screen before final DEA, so we import them once here rather than
+# rebuilding them later in every downstream script.
+discover_sample_qc_metrics <- function(results_root) {
+  general_stats_files <- list.files(
+    path = results_root,
+    pattern = "multiqc_general_stats\\.txt$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+
+  if (length(general_stats_files) == 0) {
+    stop("No multiqc_general_stats.txt files were found under results_root.", call. = FALSE)
+  }
+
+  selected_columns <- c(
+    "Sample",
+    "salmon-percent_mapped",
+    "salmon-num_mapped",
+    "fastqc_raw-percent_duplicates",
+    "fastqc_raw-percent_gc",
+    "fastqc_raw-total_sequences",
+    "fastp-pct_duplication",
+    "fastp-after_filtering_q30_rate",
+    "fastp-filtering_result_passed_filter_reads",
+    "fastp-after_filtering_gc_content",
+    "fastp-pct_surviving",
+    "fastp-pct_adapter",
+    "bowtie2_rrna_removal-overall_alignment_rate",
+    "fastqc_filtered-percent_duplicates",
+    "fastqc_filtered-percent_gc",
+    "fastqc_filtered-total_sequences"
+  )
+
+  rename_map <- c(
+    "Sample" = "sample",
+    "salmon-percent_mapped" = "salmon_percent_mapped",
+    "salmon-num_mapped" = "salmon_num_mapped_millions",
+    "fastqc_raw-percent_duplicates" = "raw_percent_duplicates",
+    "fastqc_raw-percent_gc" = "raw_percent_gc",
+    "fastqc_raw-total_sequences" = "raw_total_sequences_millions",
+    "fastp-pct_duplication" = "fastp_percent_duplication",
+    "fastp-after_filtering_q30_rate" = "fastp_q30_rate_after_filtering",
+    "fastp-filtering_result_passed_filter_reads" = "fastp_passed_filter_reads_millions",
+    "fastp-after_filtering_gc_content" = "fastp_percent_gc_after_filtering",
+    "fastp-pct_surviving" = "fastp_percent_surviving",
+    "fastp-pct_adapter" = "fastp_percent_adapter",
+    "bowtie2_rrna_removal-overall_alignment_rate" = "rrna_alignment_percent",
+    "fastqc_filtered-percent_duplicates" = "filtered_percent_duplicates",
+    "fastqc_filtered-percent_gc" = "filtered_percent_gc",
+    "fastqc_filtered-total_sequences" = "filtered_total_sequences_millions"
+  )
+
+  qc_tables <- lapply(general_stats_files, function(path) {
+    qc <- read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+
+    missing_columns <- setdiff(selected_columns, colnames(qc))
+    if (length(missing_columns) > 0) {
+      stop(
+        sprintf(
+          "MultiQC general stats file is missing expected columns:\n- %s\nMissing: %s",
+          path,
+          paste(missing_columns, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+
+    qc <- qc[, selected_columns, drop = FALSE]
+
+    # MultiQC includes per-read companion rows such as "Sample Read 1".
+    # Downstream DEA covariates should only use the sample-level summary rows.
+    qc <- qc[!grepl(" Read [12]$", qc$Sample), , drop = FALSE]
+    colnames(qc) <- unname(rename_map[colnames(qc)])
+
+    numeric_columns <- setdiff(colnames(qc), "sample")
+    qc[numeric_columns] <- lapply(qc[numeric_columns], function(x) suppressWarnings(as.numeric(x)))
+
+    qc
+  })
+
+  qc_metrics <- do.call(rbind, qc_tables)
+  duplicate_samples <- unique(qc_metrics$sample[duplicated(qc_metrics$sample)])
+  if (length(duplicate_samples) > 0) {
+    stop(
+      sprintf(
+        "Duplicate sample IDs were discovered across MultiQC general stats files: %s",
+        paste(duplicate_samples, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+  qc_metrics[order(qc_metrics$sample), , drop = FALSE]
 }
 
 # The tx2gene mapping should be the same across all four batch outputs because
@@ -237,6 +361,9 @@ metadata <- clean_metadata(metadata)
 message("Discovering Salmon quant files under: ", results_root)
 manifest <- discover_quant_files(results_root)
 
+message("Discovering sample-level MultiQC metrics under: ", results_root)
+qc_metrics <- discover_sample_qc_metrics(results_root)
+
 expected_samples <- metadata$sample
 observed_samples <- manifest$sample
 
@@ -263,10 +390,43 @@ if (length(extra_quant) > 0) {
   )
 }
 
+missing_qc <- setdiff(expected_samples, qc_metrics$sample)
+extra_qc <- setdiff(qc_metrics$sample, expected_samples)
+
+if (length(missing_qc) > 0) {
+  stop(
+    sprintf(
+      "The following samples are present in metadata but missing MultiQC sample metrics: %s",
+      paste(missing_qc, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+if (length(extra_qc) > 0) {
+  stop(
+    sprintf(
+      "The following MultiQC sample metrics are not present in metadata: %s",
+      paste(extra_qc, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
 # Reorder the manifest to the metadata sample order so every downstream matrix
 # has the same column order as the metadata table.
 manifest <- manifest[match(metadata$sample, manifest$sample), , drop = FALSE]
 stopifnot(identical(metadata$sample, manifest$sample))
+
+qc_metrics <- qc_metrics[match(metadata$sample, qc_metrics$sample), , drop = FALSE]
+stopifnot(identical(metadata$sample, qc_metrics$sample))
+
+# Fold sequencing/QC covariates directly into the sample metadata so later DEA
+# scripts only need one metadata table.
+metadata <- cbind(
+  metadata,
+  qc_metrics[, setdiff(colnames(qc_metrics), "sample"), drop = FALSE]
+)
 
 message("Loading and checking tx2gene tables")
 tx2gene <- load_and_check_tx2gene(results_root)
@@ -280,6 +440,9 @@ txi_gene <- tximport::tximport(
   type = "salmon",
   tx2gene = tx2gene[, c("transcript_id", "gene_id")],
   countsFromAbundance = "no",
+  # We only need the core abundance/count/length matrices for DEA.
+  # Any inferential replicate metadata shipped by Salmon can be dropped here.
+  dropInfReps = TRUE,
   ignoreTxVersion = FALSE
 )
 
@@ -292,6 +455,7 @@ analysis_input <- list(
   txi_gene = txi_gene,
   sample_metadata = metadata,
   sample_manifest = manifest,
+  sample_qc_metrics = qc_metrics,
   tx2gene = tx2gene,
   gene_annotation = gene_annotation,
   settings = list(
@@ -306,6 +470,7 @@ message("Writing output files to: ", output_dir)
 saveRDS(analysis_input, file = file.path(output_dir, "exp383_salmon_gene_input.rds"))
 write_tsv(metadata, file.path(output_dir, "sample_metadata_cleaned.tsv"))
 write_tsv(manifest, file.path(output_dir, "sample_to_quant_manifest.tsv"))
+write_tsv(qc_metrics, file.path(output_dir, "sample_qc_metrics.tsv"))
 write_tsv(tx2gene, file.path(output_dir, "tx2gene.tsv"))
 write_tsv(gene_annotation, file.path(output_dir, "gene_annotation.tsv"))
 
