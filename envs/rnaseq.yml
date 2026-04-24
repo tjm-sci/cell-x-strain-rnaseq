@@ -22,6 +22,7 @@ dependencies:
   # Plotting and report-friendly tables
   - r-dplyr
   - r-ggplot2
+  - r-ggrepel
   - r-pheatmap
   - r-stringr
   - r-tibble

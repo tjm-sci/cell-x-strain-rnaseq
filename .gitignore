@@ -13,6 +13,10 @@ logs/concat/
 results/
 reports/
 
+# Python bytecode caches
+__pycache__/
+*.pyc
+
 # Generated metadata products
 metadata/batches/
 metadata/exp383_merged_fastq_manifest.csv
@@ -24,3 +28,4 @@ MultiQC_Report_PRJ25147.html
 # Downloaded reference assets
 resources/reference/*.fa.gz
 resources/reference/*.gtf.gz
+resources/jon_brenton_covariate_scripts/

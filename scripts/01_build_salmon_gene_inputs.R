@@ -1,38 +1,39 @@
 #!/usr/bin/env Rscript
 
-# This script builds a single, analysis-ready gene-level input object for all
-# 286 libraries in EXP383.
+# This script builds the single handoff object used by downstream DEA scripts.
 #
 # The nf-core/rnaseq run was executed in four separate population batches, so
-# the Salmon outputs currently live in four different result directories. Before
-# we can do any downstream DEA, we want one place where:
+# the Salmon outputs, tx2gene tables, and MultiQC summaries currently live in
+# four separate result directories. Before any downstream modelling, we want one
+# stable object that:
 #
-# 1. every sample has its Salmon quant.sf file recorded
-# 2. metadata are cleaned and aligned to those quant files
-# 3. sample-level QC metrics from nf-core/MultiQC are attached once
-# 4. tximport has been run once in a reproducible way
-# 5. the resulting object is saved for later scripts
+# 1. records the `quant.sf` path for every sample
+# 2. cleans and types the project metadata once
+# 3. joins one row of sample-level QC metrics per sample
+# 4. runs tximport once in a reproducible way
+# 5. saves the resulting object for all later scripts
 #
-# This script deliberately does NOT perform DEA, differential filtering, or
-# model fitting. Those steps are left to later scripts so that design formulas
-# can be changed without rebuilding the input object from scratch.
+# This script does not perform DEA or gene filtering. It just prepares the
+# shared starting point.
 
 suppressPackageStartupMessages({
-  # We only need tximport here. All other file handling uses base R.
-  if (!requireNamespace("tximport", quietly = TRUE)) {
+  required_packages <- c("tximport", "dplyr", "tibble")
+  missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
+
+  if (length(missing_packages) > 0) {
     stop(
-      "Package 'tximport' is required but is not installed. ",
-      "Install it in your R environment before running this script.",
+      "Missing required R packages: ",
+      paste(missing_packages, collapse = ", "),
+      ". Install them in the rnaseq environment before running this script.",
       call. = FALSE
     )
   }
 })
 
-# -----------------------------
-# Command-line argument parsing
-# -----------------------------
-# To keep this script portable, argument parsing is done with a very small base-R
-# helper instead of requiring optparse/argparse.
+### COMMAND-LINE ARGUMENTS ####################################################
+
+# Keep the command-line surface small. This script is only meant to be reused
+# within this repo, not as a general package-style tool.
 parse_cli_args <- function() {
   defaults <- list(
     results_root = "/media/tmurphy/4TB_HDD/exp383/nfcore_rnaseq",
@@ -73,15 +74,17 @@ parse_cli_args <- function() {
   parsed
 }
 
-# -----------------
-# Utility functions
-# -----------------
+### SMALL HELPERS #############################################################
+
+# Stop early when an expected file or directory is missing. This keeps the main
+# workflow readable and keeps failures close to their real cause.
 stop_if_missing <- function(path, label) {
   if (!file.exists(path)) {
     stop(sprintf("%s not found: %s", label, path), call. = FALSE)
   }
 }
 
+# Write small tabular outputs in a consistent TSV format for later inspection.
 write_tsv <- function(x, path) {
   write.table(
     x,
@@ -93,8 +96,32 @@ write_tsv <- function(x, path) {
   )
 }
 
-# The sample sheet already contains most covariates we need, but we make a few
-# types explicit here so later DEA scripts do not need to guess them.
+# Standardize numeric covariates once here so downstream design formulas can use
+# stable `_z` columns instead of repeating ad hoc scaling later.
+scale_numeric_covariate <- function(x) {
+  x <- as.numeric(x)
+  out <- rep(NA_real_, length(x))
+
+  keep <- !is.na(x)
+  if (!any(keep)) {
+    return(out)
+  }
+
+  x_keep <- x[keep]
+  if (stats::sd(x_keep) == 0) {
+    out[keep] <- 0
+    return(out)
+  }
+
+  out[keep] <- as.numeric(scale(x_keep))
+  out
+}
+
+### METADATA PREPARATION ######################################################
+
+# The sample sheet already carries the core biological and technical metadata.
+# Here we make the intended data types explicit so later DEA scripts do not need
+# to guess whether a column should be numeric, factor, or both.
 clean_metadata <- function(metadata) {
   required_columns <- c(
     "sample", "mouse_n", "population", "inoculum", "dpi", "group_assignment",
@@ -113,70 +140,41 @@ clean_metadata <- function(metadata) {
     )
   }
 
-  metadata$sample <- as.character(metadata$sample)
-  metadata$mouse_n <- as.character(metadata$mouse_n)
-  metadata$population <- factor(
-    metadata$population,
-    levels = c("NeuN", "SOX10", "SOX2", "PU1")
-  )
-  metadata$inoculum <- factor(metadata$inoculum)
-  metadata$group_assignment <- factor(metadata$group_assignment)
-  metadata$inoculation_batch <- factor(metadata$inoculation_batch)
+  metadata_tbl <- tibble::as_tibble(metadata)
+  prep_dates <- as.Date(metadata_tbl$date_nuc_prep)
 
-  # Keep both numeric and factor versions of dpi because different downstream
-  # models may want different representations.
-  metadata$dpi <- as.integer(metadata$dpi)
-  metadata$dpi_factor <- factor(metadata$dpi, levels = sort(unique(metadata$dpi)))
-
-  # Technical covariates that are naturally numeric are parsed now so later
-  # scripts can use them directly in model formulas.
-  metadata$sample_mass_mg <- suppressWarnings(as.numeric(metadata$sample_mass_mg))
-  metadata$incubation_time_hrs <- suppressWarnings(as.numeric(metadata$incubation_time_hrs))
-
-  # Dates are kept in three forms:
-  # - the original string column
-  # - a factor for categorical modeling
-  # - an integer day offset for numeric trend modeling
-  prep_dates <- as.Date(metadata$date_nuc_prep)
-  metadata$date_nuc_prep_factor <- factor(metadata$date_nuc_prep)
-  if (all(is.na(prep_dates))) {
-    metadata$date_nuc_prep_days <- NA_integer_
+  date_nuc_prep_days <- if (all(is.na(prep_dates))) {
+    rep(NA_integer_, nrow(metadata_tbl))
   } else {
-    metadata$date_nuc_prep_days <- as.integer(prep_dates - min(prep_dates, na.rm = TRUE))
+    as.integer(prep_dates - min(prep_dates, na.rm = TRUE))
   }
 
-  # Provide centered/scaled numeric covariates once here so later design files
-  # can use stable, model-friendly column names instead of repeating ad hoc
-  # scaling inside every analysis script.
-  scale_numeric_covariate <- function(x) {
-    x <- as.numeric(x)
-    out <- rep(NA_real_, length(x))
-
-    keep <- !is.na(x)
-    if (!any(keep)) {
-      return(out)
-    }
-
-    x_keep <- x[keep]
-    if (stats::sd(x_keep) == 0) {
-      out[keep] <- 0
-      return(out)
-    }
-
-    out[keep] <- as.numeric(scale(x_keep))
-    out
-  }
-
-  metadata$sample_mass_mg_z <- scale_numeric_covariate(metadata$sample_mass_mg)
-  metadata$incubation_time_hrs_z <- scale_numeric_covariate(metadata$incubation_time_hrs)
-  metadata$date_nuc_prep_days_z <- scale_numeric_covariate(metadata$date_nuc_prep_days)
-
-  metadata
+  metadata_tbl |>
+    dplyr::mutate(
+      sample = as.character(.data$sample),
+      mouse_n = as.character(.data$mouse_n),
+      population = factor(.data$population, levels = c("NeuN", "SOX10", "SOX2", "PU1")),
+      inoculum = factor(.data$inoculum),
+      group_assignment = factor(.data$group_assignment),
+      inoculation_batch = factor(.data$inoculation_batch),
+      dpi = as.integer(.data$dpi),
+      dpi_factor = factor(.data$dpi, levels = sort(unique(.data$dpi))),
+      sample_mass_mg = suppressWarnings(as.numeric(.data$sample_mass_mg)),
+      incubation_time_hrs = suppressWarnings(as.numeric(.data$incubation_time_hrs)),
+      date_nuc_prep_factor = factor(.data$date_nuc_prep),
+      date_nuc_prep_days = date_nuc_prep_days,
+      sample_mass_mg_z = scale_numeric_covariate(.data$sample_mass_mg),
+      incubation_time_hrs_z = scale_numeric_covariate(.data$incubation_time_hrs),
+      date_nuc_prep_days_z = scale_numeric_covariate(.data$date_nuc_prep_days)
+    )
 }
+
+### DISCOVER SALMON OUTPUTS ###################################################
 
 # Salmon quant files live under:
 #   <results_root>/<batch>/salmon/<sample>/quant.sf
-# We discover them rather than hard-coding per-batch paths.
+# We discover them dynamically so this script remains aligned to the actual
+# result tree on disk.
 discover_quant_files <- function(results_root) {
   quant_files <- list.files(
     path = results_root,
@@ -189,14 +187,18 @@ discover_quant_files <- function(results_root) {
     stop("No Salmon quant.sf files were found under results_root.", call. = FALSE)
   }
 
-  manifest <- data.frame(
+  manifest <- tibble::tibble(
     sample = basename(dirname(quant_files)),
     batch = basename(dirname(dirname(dirname(quant_files)))),
-    quant_sf = normalizePath(quant_files, winslash = "/", mustWork = TRUE),
-    stringsAsFactors = FALSE
-  )
+    quant_sf = normalizePath(quant_files, winslash = "/", mustWork = TRUE)
+  ) |>
+    dplyr::arrange(.data$sample)
 
-  duplicate_samples <- unique(manifest$sample[duplicated(manifest$sample)])
+  duplicate_samples <- manifest |>
+    dplyr::count(.data$sample) |>
+    dplyr::filter(.data$n > 1) |>
+    dplyr::pull(.data$sample)
+
   if (length(duplicate_samples) > 0) {
     stop(
       sprintf(
@@ -207,13 +209,20 @@ discover_quant_files <- function(results_root) {
     )
   }
 
-  manifest[order(manifest$sample), , drop = FALSE]
+  manifest
 }
 
-# nf-core writes a compact, tabular summary of per-sample QC metrics into each
-# batch MultiQC directory. These are exactly the kind of technical covariates we
-# want to screen before final DEA, so we import them once here rather than
-# rebuilding them later in every downstream script.
+### DISCOVER SAMPLE-LEVEL QC ##################################################
+
+# nf-core writes a compact per-sample summary into each batch's
+# `multiqc_general_stats.txt`. We import the sample-level rows once here and
+# carry them forward into DEA as technical covariates.
+#
+# Important detail:
+# - `fastp_percent_adapter` is the adapter burden detected and trimmed by
+#   fastp from the input reads. It is not a post-filter residual adapter
+#   percentage. MultiQC does not expose a comparable post-trim adapter column in
+#   this summary table.
 discover_sample_qc_metrics <- function(results_root) {
   general_stats_files <- list.files(
     path = results_root,
@@ -265,7 +274,7 @@ discover_sample_qc_metrics <- function(results_root) {
   )
 
   qc_tables <- lapply(general_stats_files, function(path) {
-    qc <- read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+    qc <- utils::read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
 
     missing_columns <- setdiff(selected_columns, colnames(qc))
     if (length(missing_columns) > 0) {
@@ -279,21 +288,30 @@ discover_sample_qc_metrics <- function(results_root) {
       )
     }
 
-    qc <- qc[, selected_columns, drop = FALSE]
-
-    # MultiQC includes per-read companion rows such as "Sample Read 1".
-    # Downstream DEA covariates should only use the sample-level summary rows.
-    qc <- qc[!grepl(" Read [12]$", qc$Sample), , drop = FALSE]
-    colnames(qc) <- unname(rename_map[colnames(qc)])
+    qc <- qc |>
+      tibble::as_tibble() |>
+      dplyr::select(dplyr::all_of(selected_columns)) |>
+      dplyr::filter(!grepl(" Read [12]$", .data$Sample)) |>
+      stats::setNames(unname(rename_map[selected_columns]))
 
     numeric_columns <- setdiff(colnames(qc), "sample")
-    qc[numeric_columns] <- lapply(qc[numeric_columns], function(x) suppressWarnings(as.numeric(x)))
-
-    qc
+    qc |>
+      dplyr::mutate(
+        dplyr::across(
+          dplyr::all_of(numeric_columns),
+          ~ suppressWarnings(as.numeric(.x))
+        )
+      )
   })
 
-  qc_metrics <- do.call(rbind, qc_tables)
-  duplicate_samples <- unique(qc_metrics$sample[duplicated(qc_metrics$sample)])
+  qc_metrics <- dplyr::bind_rows(qc_tables) |>
+    dplyr::arrange(.data$sample)
+
+  duplicate_samples <- qc_metrics |>
+    dplyr::count(.data$sample) |>
+    dplyr::filter(.data$n > 1) |>
+    dplyr::pull(.data$sample)
+
   if (length(duplicate_samples) > 0) {
     stop(
       sprintf(
@@ -304,11 +322,13 @@ discover_sample_qc_metrics <- function(results_root) {
     )
   }
 
-  qc_metrics[order(qc_metrics$sample), , drop = FALSE]
+  qc_metrics
 }
 
-# The tx2gene mapping should be the same across all four batch outputs because
-# they all used the same Ensembl reference. We verify that assumption explicitly.
+### LOAD AND VERIFY TX2GENE ###################################################
+
+# All four nf-core batches were run against the same Ensembl reference, so
+# their tx2gene tables should be identical. We verify that explicitly here.
 load_and_check_tx2gene <- function(results_root) {
   tx2gene_files <- list.files(
     path = results_root,
@@ -322,7 +342,8 @@ load_and_check_tx2gene <- function(results_root) {
   }
 
   tx2gene_tables <- lapply(tx2gene_files, function(path) {
-    read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+    utils::read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE) |>
+      tibble::as_tibble()
   })
 
   reference_table <- tx2gene_tables[[1]]
@@ -341,9 +362,8 @@ load_and_check_tx2gene <- function(results_root) {
   reference_table
 }
 
-# -----------------
-# Main script logic
-# -----------------
+### MAIN WORKFLOW #############################################################
+
 args <- parse_cli_args()
 results_root <- normalizePath(args$results_root, winslash = "/", mustWork = FALSE)
 metadata_csv <- normalizePath(args$metadata_csv, winslash = "/", mustWork = FALSE)
@@ -351,12 +371,11 @@ output_dir <- args$output_dir
 
 stop_if_missing(results_root, "Results root")
 stop_if_missing(metadata_csv, "Metadata CSV")
-
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 message("Reading metadata: ", metadata_csv)
-metadata <- read.csv(metadata_csv, stringsAsFactors = FALSE, check.names = FALSE)
-metadata <- clean_metadata(metadata)
+metadata <- utils::read.csv(metadata_csv, stringsAsFactors = FALSE, check.names = FALSE) |>
+  clean_metadata()
 
 message("Discovering Salmon quant files under: ", results_root)
 manifest <- discover_quant_files(results_root)
@@ -369,7 +388,6 @@ observed_samples <- manifest$sample
 
 missing_quant <- setdiff(expected_samples, observed_samples)
 extra_quant <- setdiff(observed_samples, expected_samples)
-
 if (length(missing_quant) > 0) {
   stop(
     sprintf(
@@ -379,7 +397,6 @@ if (length(missing_quant) > 0) {
     call. = FALSE
   )
 }
-
 if (length(extra_quant) > 0) {
   stop(
     sprintf(
@@ -392,7 +409,6 @@ if (length(extra_quant) > 0) {
 
 missing_qc <- setdiff(expected_samples, qc_metrics$sample)
 extra_qc <- setdiff(qc_metrics$sample, expected_samples)
-
 if (length(missing_qc) > 0) {
   stop(
     sprintf(
@@ -402,7 +418,6 @@ if (length(missing_qc) > 0) {
     call. = FALSE
   )
 }
-
 if (length(extra_qc) > 0) {
   stop(
     sprintf(
@@ -413,20 +428,23 @@ if (length(extra_qc) > 0) {
   )
 }
 
-# Reorder the manifest to the metadata sample order so every downstream matrix
-# has the same column order as the metadata table.
-manifest <- manifest[match(metadata$sample, manifest$sample), , drop = FALSE]
-stopifnot(identical(metadata$sample, manifest$sample))
+# Reorder everything to the metadata sample order once, so all later matrices
+# and metadata tables stay aligned.
+sample_order <- metadata |>
+  dplyr::select("sample")
 
-qc_metrics <- qc_metrics[match(metadata$sample, qc_metrics$sample), , drop = FALSE]
+manifest <- sample_order |>
+  dplyr::left_join(manifest, by = "sample")
+qc_metrics <- sample_order |>
+  dplyr::left_join(qc_metrics, by = "sample")
+
+stopifnot(identical(metadata$sample, manifest$sample))
 stopifnot(identical(metadata$sample, qc_metrics$sample))
 
-# Fold sequencing/QC covariates directly into the sample metadata so later DEA
-# scripts only need one metadata table.
-metadata <- cbind(
-  metadata,
-  qc_metrics[, setdiff(colnames(qc_metrics), "sample"), drop = FALSE]
-)
+# Fold technical covariates directly into the cleaned metadata table so later
+# DEA scripts only need one metadata object.
+metadata <- metadata |>
+  dplyr::left_join(qc_metrics, by = "sample")
 
 message("Loading and checking tx2gene tables")
 tx2gene <- load_and_check_tx2gene(results_root)
@@ -440,17 +458,17 @@ txi_gene <- tximport::tximport(
   type = "salmon",
   tx2gene = tx2gene[, c("transcript_id", "gene_id")],
   countsFromAbundance = "no",
-  # We only need the core abundance/count/length matrices for DEA.
-  # Any inferential replicate metadata shipped by Salmon can be dropped here.
   dropInfReps = TRUE,
   ignoreTxVersion = FALSE
 )
 
-# Gene name annotations are helpful later when writing result tables.
-gene_annotation <- unique(tx2gene[, c("gene_id", "gene_name")])
-gene_annotation <- gene_annotation[order(gene_annotation$gene_id), , drop = FALSE]
+# Gene-name annotations are convenient later when writing marker lookups and DE
+# result tables.
+gene_annotation <- tx2gene |>
+  dplyr::distinct(.data$gene_id, .keep_all = TRUE) |>
+  dplyr::select("gene_id", "gene_name") |>
+  dplyr::arrange(.data$gene_id)
 
-# This object is the main handoff to later DEA scripts.
 analysis_input <- list(
   txi_gene = txi_gene,
   sample_metadata = metadata,
@@ -474,10 +492,9 @@ write_tsv(qc_metrics, file.path(output_dir, "sample_qc_metrics.tsv"))
 write_tsv(tx2gene, file.path(output_dir, "tx2gene.tsv"))
 write_tsv(gene_annotation, file.path(output_dir, "gene_annotation.tsv"))
 
-population_counts <- as.data.frame(table(metadata$population), stringsAsFactors = FALSE)
-colnames(population_counts) <- c("population", "n_samples")
+population_counts <- metadata |>
+  dplyr::count(.data$population, name = "n_samples")
 write_tsv(population_counts, file.path(output_dir, "population_sample_counts.tsv"))
-
 writeLines(capture.output(sessionInfo()), con = file.path(output_dir, "sessionInfo.txt"))
 
 message("Finished building unified Salmon gene-level input object")

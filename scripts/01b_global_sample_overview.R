@@ -23,6 +23,7 @@ suppressPackageStartupMessages({
     "DESeq2",
     "dplyr",
     "ggplot2",
+    "ggrepel",
     "pheatmap",
     "stringr",
     "tibble",
@@ -62,7 +63,9 @@ parse_cli_args <- function() {
     min_count = "10",
     min_samples = "6",
     filter_group_var = "population",
-    pca_ntop = "500"
+    pca_ntop = "500",
+    inoculum_subset = "all",
+    n_labelled_samples = "12"
   )
 
   args <- commandArgs(trailingOnly = TRUE)
@@ -96,6 +99,7 @@ parse_cli_args <- function() {
   parsed$min_count <- as.numeric(parsed$min_count)
   parsed$min_samples <- as.integer(parsed$min_samples)
   parsed$pca_ntop <- as.integer(parsed$pca_ntop)
+  parsed$n_labelled_samples <- as.integer(parsed$n_labelled_samples)
 
   parsed
 }
@@ -180,12 +184,108 @@ build_pca_coordinates <- function(vsd, coldata, ntop) {
   pca_table
 }
 
-save_pca_plot <- function(pca_table, color_var, percent_variance, output_file, ntop) {
+build_run_label <- function(inoculum_subset) {
+  if (identical(inoculum_subset, "all")) {
+    return("all samples")
+  }
+
+  paste0(inoculum_subset, " controls only")
+}
+
+identify_flagged_pca_samples <- function(pca_table, group_var = "population", top_n = 12) {
+  if (!group_var %in% colnames(pca_table)) {
+    return(tibble::tibble())
+  }
+
+  centroid_table <- pca_table |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_var))) |>
+    dplyr::summarise(
+      centroid_pc1 = mean(.data$PC1),
+      centroid_pc2 = mean(.data$PC2),
+      .groups = "drop"
+    ) |>
+    dplyr::rename(group_value = dplyr::all_of(group_var))
+
+  scored <- lapply(seq_len(nrow(pca_table)), function(i) {
+    sample_row <- pca_table[i, , drop = FALSE]
+    sample_group <- as.character(sample_row[[group_var]][[1]])
+    own_centroid <- centroid_table[centroid_table$group_value == sample_group, , drop = FALSE]
+    other_centroids <- centroid_table[centroid_table$group_value != sample_group, , drop = FALSE]
+
+    own_distance <- sqrt(
+      (sample_row$PC1 - own_centroid$centroid_pc1)^2 +
+        (sample_row$PC2 - own_centroid$centroid_pc2)^2
+    )
+
+    other_distances <- sqrt(
+      (sample_row$PC1 - other_centroids$centroid_pc1)^2 +
+        (sample_row$PC2 - other_centroids$centroid_pc2)^2
+    )
+
+    nearest_other_idx <- which.min(other_distances)
+
+    tibble::tibble(
+      sample = sample_row$sample,
+      group_value = sample_group,
+      PC1 = sample_row$PC1,
+      PC2 = sample_row$PC2,
+      own_centroid_distance = own_distance,
+      nearest_other_population = other_centroids$group_value[[nearest_other_idx]],
+      nearest_other_distance = other_distances[[nearest_other_idx]],
+      centroid_misassignment_ratio = own_distance / other_distances[[nearest_other_idx]]
+    )
+  }) |>
+    dplyr::bind_rows() |>
+    dplyr::arrange(dplyr::desc(.data$centroid_misassignment_ratio)) |>
+    dplyr::mutate(
+      flagged_for_label = dplyr::row_number() <= min(top_n, dplyr::n())
+    )
+
+  scored <- scored |>
+    dplyr::filter(.data$flagged_for_label) |>
+    dplyr::select(
+      "sample",
+      "group_value",
+      "PC1",
+      "PC2",
+      "own_centroid_distance",
+      "nearest_other_population",
+      "nearest_other_distance",
+      "centroid_misassignment_ratio"
+    )
+
+  colnames(scored)[colnames(scored) == "group_value"] <- group_var
+  scored
+}
+
+save_pca_plot <- function(
+  pca_table,
+  color_var,
+  percent_variance,
+  output_file,
+  ntop,
+  run_label,
+  flagged_samples = NULL
+) {
   if (!color_var %in% colnames(pca_table)) {
     return(invisible(NULL))
   }
 
   is_numeric_colour <- is.numeric(pca_table[[color_var]])
+
+  subtitle_text <- sprintf(
+    "PCs calculated using the top %d most variable genes | %s",
+    ntop,
+    run_label
+  )
+
+  if (!is.null(flagged_samples) && nrow(flagged_samples) > 0) {
+    subtitle_text <- paste(
+      subtitle_text,
+      "Labelled samples are ranked by distance to their own population centroid divided by distance to the nearest other population centroid in PC1/PC2 space.",
+      sep = "\n"
+    )
+  }
 
   p <- ggplot2::ggplot(
     pca_table,
@@ -195,7 +295,7 @@ save_pca_plot <- function(pca_table, color_var, percent_variance, output_file, n
     exp383_theme(base_size = 12) +
     ggplot2::labs(
       title = paste("Global PCA coloured by", color_var),
-      subtitle = sprintf("PCs calculated using the top %d most variable genes", ntop),
+      subtitle = subtitle_text,
       x = sprintf("PC1 (%.1f%% variance)", percent_variance[[1]]),
       y = sprintf("PC2 (%.1f%% variance)", percent_variance[[2]]),
       colour = color_var
@@ -207,7 +307,36 @@ save_pca_plot <- function(pca_table, color_var, percent_variance, output_file, n
     p <- p + ggplot2::scale_colour_gradient(low = "#d9e6f5", high = "#08306b")
   }
 
-  ggplot2::ggsave(output_file, plot = p, width = 7.5, height = 6)
+  if (!is.null(flagged_samples) && nrow(flagged_samples) > 0) {
+    p <- p +
+      ggplot2::geom_point(
+        data = flagged_samples,
+        mapping = ggplot2::aes(x = .data$PC1, y = .data$PC2),
+        inherit.aes = FALSE,
+        shape = 21,
+        size = 3.2,
+        stroke = 0.7,
+        fill = NA,
+        colour = "black"
+      ) +
+      ggrepel::geom_label_repel(
+        data = flagged_samples,
+        mapping = ggplot2::aes(x = .data$PC1, y = .data$PC2, label = .data$sample),
+        inherit.aes = FALSE,
+        size = 2.6,
+        colour = "black",
+        fill = "white",
+        label.size = 0.2,
+        box.padding = 0.35,
+        point.padding = 0.25,
+        segment.color = "grey35",
+        segment.size = 0.3,
+        max.overlaps = Inf,
+        min.segment.length = 0
+      )
+  }
+
+  exp383_save_ggplot(output_file, plot = p, width = 7.5, height = 6)
 }
 
 build_distance_legend_spec <- function(distance_matrix) {
@@ -227,7 +356,7 @@ build_distance_legend_spec <- function(distance_matrix) {
   )
 }
 
-save_sample_distance_heatmap <- function(vsd, coldata, output_file) {
+save_sample_distance_heatmap <- function(vsd, coldata, output_file, run_label) {
   distance_matrix <- as.matrix(stats::dist(t(SummarizedExperiment::assay(vsd))))
   rownames(distance_matrix) <- rownames(coldata)
   colnames(distance_matrix) <- rownames(coldata)
@@ -240,7 +369,7 @@ save_sample_distance_heatmap <- function(vsd, coldata, output_file) {
     dplyr::transmute(population = exp383_population_display_factor(.data$population)) |>
     as.data.frame()
 
-  grDevices::pdf(output_file, width = 11, height = 10)
+  exp383_open_png_device(output_file, width = 11, height = 10)
   pheatmap::pheatmap(
     distance_matrix,
     annotation_col = annotation_df,
@@ -250,7 +379,7 @@ save_sample_distance_heatmap <- function(vsd, coldata, output_file) {
     show_colnames = FALSE,
     legend_breaks = distance_legend$breaks,
     legend_labels = distance_legend$labels,
-    main = "Sample distance heatmap (Euclidean distance on blind VST)"
+    main = paste0("Sample distance heatmap (Euclidean distance on blind VST)\n", run_label)
   )
   grDevices::dev.off()
 }
@@ -397,7 +526,7 @@ build_marker_expression_table <- function(vsd, coldata, marker_table) {
   marker_long
 }
 
-save_marker_expression_plot <- function(marker_expression, output_file, ncol = 2, width = 9, height = 7) {
+save_marker_expression_plot <- function(marker_expression, output_file, run_label, ncol = 2, width = 9, height = 7) {
   if (nrow(marker_expression) == 0) {
     return(invisible(NULL))
   }
@@ -425,19 +554,19 @@ save_marker_expression_plot <- function(marker_expression, output_file, ncol = 2
     ggplot2::coord_cartesian(ylim = global_limits) +
     exp383_theme(base_size = 12) +
     ggplot2::labs(
-      title = plot_title,
+      title = paste0(plot_title, "\n", run_label),
       x = "Sorted nuclei population",
-      y = "Normalised expression"
+      y = "Normalised expression (VST)"
     ) +
     ggplot2::theme(
       axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
       legend.position = "none"
     )
 
-  ggplot2::ggsave(output_file, plot = p, width = width, height = height)
+  exp383_save_ggplot(output_file, plot = p, width = width, height = height)
 }
 
-save_marker_heatmap <- function(vsd, coldata, marker_table, output_file) {
+save_marker_heatmap <- function(vsd, coldata, marker_table, output_file, run_label) {
   marker_found <- marker_table |>
     dplyr::filter(.data$marker_found)
 
@@ -469,7 +598,7 @@ save_marker_heatmap <- function(vsd, coldata, marker_table, output_file) {
     row.names = sample_order
   )
 
-  grDevices::pdf(output_file, width = 12, height = 5)
+  exp383_open_png_device(output_file, width = 12, height = 5)
   pheatmap::pheatmap(
     marker_matrix_scaled,
     annotation_col = annotation_df,
@@ -481,7 +610,7 @@ save_marker_heatmap <- function(vsd, coldata, marker_table, output_file) {
     breaks = marker_breaks,
     legend_breaks = marker_legend_breaks,
     legend_labels = marker_legend_labels,
-    main = "FANS marker heatmap (row-scaled z-scores from blind VST)",
+    main = paste0("FANS marker heatmap (row-scaled z-scores from blind VST)\n", run_label),
     name = "Z score"
   )
   grDevices::dev.off()
@@ -506,11 +635,26 @@ if (length(missing_objects) > 0) {
 
 coldata <- analysis_input$sample_metadata |>
   dplyr::mutate(
-    population = exp383_population_factor(.data$population)
+    population = exp383_population_factor(.data$population),
+    # Treat DPI as a discrete experimental factor for plotting. The numeric
+    # ordering is preserved in the factor levels so the legend reads naturally.
+    dpi = factor(.data$dpi, levels = sort(unique(.data$dpi)))
   ) |>
   as.data.frame()
 
+if (!identical(args$inoculum_subset, "all")) {
+  coldata <- coldata[coldata$inoculum == args$inoculum_subset, , drop = FALSE]
+
+  if (nrow(coldata) == 0) {
+    stop(
+      sprintf("No samples remain after subsetting to inoculum '%s'.", args$inoculum_subset),
+      call. = FALSE
+    )
+  }
+}
+
 rownames(coldata) <- coldata$sample
+run_label <- build_run_label(args$inoculum_subset)
 
 txi_gene <- analysis_input$txi_gene
 sample_order <- rownames(coldata)
@@ -528,8 +672,10 @@ txi_gene <- subset_txi(
 dir.create(args$output_dir, recursive = TRUE, showWarnings = FALSE)
 plot_dir <- file.path(args$output_dir, "plots")
 table_dir <- file.path(args$output_dir, "tables")
+cache_dir <- file.path(args$output_dir, "cache")
 dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 
 keep_genes <- compute_grouped_filter(
   count_matrix = txi_gene$counts,
@@ -570,6 +716,26 @@ size_factors <- tibble::tibble(
 )
 write_tsv(size_factors, file.path(table_dir, "size_factors.tsv"))
 
+# Save the transformed expression object and aligned metadata so follow-on
+# exploratory scripts can reuse the exact same global filter and VST instead of
+# rebuilding them independently.
+saveRDS(
+  list(
+    vsd = vsd,
+    coldata = coldata,
+    txi_filtered = txi_filtered,
+    filter_summary = filter_summary,
+    settings = list(
+      min_count = args$min_count,
+      min_samples = args$min_samples,
+      filter_group_var = args$filter_group_var,
+      pca_ntop = args$pca_ntop,
+      inoculum_subset = args$inoculum_subset
+    )
+  ),
+  file = file.path(cache_dir, "global_overview_input.rds")
+)
+
 pca_table <- build_pca_coordinates(vsd, coldata, ntop = args$pca_ntop)
 percent_variance <- attr(pca_table, "percent_variance")
 
@@ -581,46 +747,76 @@ pca_variance <- tibble::tibble(
 write_tsv(pca_variance, file.path(table_dir, "pca_variance.tsv"))
 write_tsv(pca_table, file.path(table_dir, "pca_coordinates.tsv"))
 
+flagged_pca_samples <- identify_flagged_pca_samples(
+  pca_table = pca_table,
+  group_var = "population",
+  top_n = args$n_labelled_samples
+)
+write_tsv(flagged_pca_samples, file.path(table_dir, "flagged_population_pca_samples.tsv"))
+
 save_pca_plot(
   pca_table = pca_table,
   color_var = "population",
   percent_variance = percent_variance,
-  output_file = file.path(plot_dir, "global_pca_by_population.pdf"),
-  ntop = args$pca_ntop
+  output_file = file.path(plot_dir, "global_pca_by_population.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
 )
 save_pca_plot(
   pca_table = pca_table,
-  color_var = "group_assignment",
+  color_var = "population",
   percent_variance = percent_variance,
-  output_file = file.path(plot_dir, "global_pca_by_group_assignment.pdf"),
-  ntop = args$pca_ntop
+  output_file = file.path(plot_dir, "global_pca_by_population_labelled.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label,
+  flagged_samples = flagged_pca_samples
+)
+save_pca_plot(
+  pca_table = pca_table,
+  color_var = "dpi",
+  percent_variance = percent_variance,
+  output_file = file.path(plot_dir, "global_pca_by_dpi.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
+)
+save_pca_plot(
+  pca_table = pca_table,
+  color_var = "inoculum",
+  percent_variance = percent_variance,
+  output_file = file.path(plot_dir, "global_pca_by_inoculum.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
 )
 save_pca_plot(
   pca_table = pca_table,
   color_var = "inoculation_batch",
   percent_variance = percent_variance,
-  output_file = file.path(plot_dir, "global_pca_by_inoculation_batch.pdf"),
-  ntop = args$pca_ntop
+  output_file = file.path(plot_dir, "global_pca_by_inoculation_batch.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
 )
 save_pca_plot(
   pca_table = pca_table,
   color_var = "salmon_percent_mapped",
   percent_variance = percent_variance,
-  output_file = file.path(plot_dir, "global_pca_by_salmon_percent_mapped.pdf"),
-  ntop = args$pca_ntop
+  output_file = file.path(plot_dir, "global_pca_by_salmon_percent_mapped.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
 )
 save_pca_plot(
   pca_table = pca_table,
   color_var = "rrna_alignment_percent",
   percent_variance = percent_variance,
-  output_file = file.path(plot_dir, "global_pca_by_rrna_alignment_percent.pdf"),
-  ntop = args$pca_ntop
+  output_file = file.path(plot_dir, "global_pca_by_rrna_alignment_percent.png"),
+  ntop = args$pca_ntop,
+  run_label = run_label
 )
 
 save_sample_distance_heatmap(
   vsd = vsd,
   coldata = coldata,
-  output_file = file.path(plot_dir, "global_sample_distance_heatmap.pdf")
+  output_file = file.path(plot_dir, "global_sample_distance_heatmap.png"),
+  run_label = run_label
 )
 
 sorting_marker_table <- build_marker_gene_table(
@@ -636,7 +832,8 @@ if (nrow(sorting_marker_expression) > 0) {
 
 save_marker_expression_plot(
   marker_expression = sorting_marker_expression,
-  output_file = file.path(plot_dir, "fans_marker_expression_by_population.pdf"),
+  output_file = file.path(plot_dir, "fans_marker_expression_by_population.png"),
+  run_label = run_label,
   ncol = 2,
   width = 9,
   height = 7
@@ -645,7 +842,8 @@ save_marker_heatmap(
   vsd = vsd,
   coldata = coldata,
   marker_table = sorting_marker_table,
-  output_file = file.path(plot_dir, "fans_marker_heatmap.pdf")
+  output_file = file.path(plot_dir, "fans_marker_heatmap.png"),
+  run_label = run_label
 )
 
 canonical_marker_table <- build_marker_gene_table(
@@ -661,7 +859,8 @@ if (nrow(canonical_marker_expression) > 0) {
 
 save_marker_expression_plot(
   marker_expression = canonical_marker_expression,
-  output_file = file.path(plot_dir, "canonical_marker_expression_by_population.pdf"),
+  output_file = file.path(plot_dir, "canonical_marker_expression_by_population.png"),
+  run_label = run_label,
   ncol = 3,
   width = 12,
   height = 13
@@ -672,6 +871,6 @@ writeLines(
   con = file.path(args$output_dir, "sessionInfo.txt")
 )
 
-message("Finished global all-sample overview")
+message("Finished global sample overview: ", run_label)
 message("Samples used: ", nrow(coldata))
 message("Genes retained after filtering: ", nrow(txi_filtered$counts))

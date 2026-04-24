@@ -4,7 +4,7 @@
 # neighbouring FANS analysis repo:
 #   ../exp383-analysis_of_FANS_data
 #
-# The main goals are:
+# Function:
 # - keep population colours stable across the project
 # - keep ggplot typography and panel styling consistent
 # - make the style easy to reuse from multiple scripts
@@ -100,4 +100,32 @@ exp383_population_annotation_colors <- function() {
   )
 
   list(population = display_palette)
+}
+
+# High-resolution raster settings for project figures. PNG is used throughout
+# because it is broadly compatible with slides, documents, and web exports.
+exp383_plot_dpi <- 300
+
+exp383_save_ggplot <- function(output_file, plot, width, height, dpi = exp383_plot_dpi) {
+  ggplot2::ggsave(
+    filename = output_file,
+    plot = plot,
+    device = "png",
+    width = width,
+    height = height,
+    units = "in",
+    dpi = dpi,
+    bg = "white"
+  )
+}
+
+exp383_open_png_device <- function(output_file, width, height, dpi = exp383_plot_dpi) {
+  grDevices::png(
+    filename = output_file,
+    width = width,
+    height = height,
+    units = "in",
+    res = dpi,
+    bg = "white"
+  )
 }

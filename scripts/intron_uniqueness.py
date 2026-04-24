@@ -26,8 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GTF = REPO_ROOT / "resources" / "reference" / "Mus_musculus.GRCm39.115.gtf.gz"
 DEFAULT_OUTPUT = REPO_ROOT / "reports" / "intron_uniqueness_metrics.csv"
 
+### COMMAND-LINE ARGUMENTS ####################################################
+
 
 def parse_args() -> argparse.Namespace:
+    """Parse the small set of inputs needed for this one-off annotation scan."""
     parser = argparse.ArgumentParser(
         description="Estimate how uniquely annotated intronic sequence maps to genes."
     )
@@ -45,8 +48,11 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+### GTF PARSING ###############################################################
+
 
 def parse_gtf_attributes(attribute_text: str) -> dict[str, str]:
+    """Extract `key "value"` pairs from the ninth GTF column."""
     attributes: dict[str, str] = {}
     for part in attribute_text.strip().split(";"):
         part = part.strip()
@@ -58,6 +64,7 @@ def parse_gtf_attributes(attribute_text: str) -> dict[str, str]:
 
 
 def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or abutting genomic intervals."""
     if not intervals:
         return []
 
@@ -74,6 +81,7 @@ def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
 def load_gene_and_exon_annotations(
     gtf_path: Path,
 ) -> tuple[dict[str, tuple[str, str, int, int]], dict[str, list[tuple[int, int]]]]:
+    """Load gene spans and exon intervals keyed by gene ID."""
     genes: dict[str, tuple[str, str, int, int]] = {}
     exons: dict[str, list[tuple[int, int]]] = defaultdict(list)
 
@@ -102,6 +110,8 @@ def load_gene_and_exon_annotations(
                 exons[gene_id].append((start_i, end_i))
 
     return genes, exons
+
+### INTRON DERIVATION #########################################################
 
 
 def derive_introns(
@@ -133,6 +143,8 @@ def derive_introns(
             introns_by_chr[chrom].append((cursor, gene_end, strand, gene_id))
 
     return introns_by_chr, gene_spans_by_chr
+
+### COVERAGE-BASED UNIQUENESS CALCULATION #####################################
 
 
 def build_segments(events: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
@@ -188,6 +200,7 @@ def summarize_intron_uniqueness(
     introns_by_chr: dict[str, list[tuple[int, int, str, str]]],
     gene_spans_by_chr: dict[str, list[tuple[int, int, str, str]]],
 ) -> dict[str, float]:
+    """Summarize how often annotated introns are unique to one gene."""
     total_intronic_intervals = 0
     total_intronic_bases = 0
     unique_same_strand_bases = 0
@@ -266,8 +279,11 @@ def summarize_intron_uniqueness(
         ),
     }
 
+### OUTPUT WRITING ############################################################
+
 
 def write_metrics_csv(metrics: dict[str, float], output_path: Path) -> None:
+    """Write the final metrics as a simple two-column CSV."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="") as handle:
         writer = csv.writer(handle)
@@ -275,8 +291,11 @@ def write_metrics_csv(metrics: dict[str, float], output_path: Path) -> None:
         for metric, value in metrics.items():
             writer.writerow([metric, value])
 
+### MAIN WORKFLOW #############################################################
+
 
 def main() -> None:
+    """Run the full intron-uniqueness calculation and report the result."""
     args = parse_args()
 
     genes, exons = load_gene_and_exon_annotations(args.gtf)

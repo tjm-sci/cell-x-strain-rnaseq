@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Summarize completed nf-core/rnaseq batches for the EXP383 project."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,8 +18,11 @@ BATCHES = [
     ("04_PU1", "PU1"),
 ]
 
+### COMMAND-LINE ARGUMENTS ####################################################
+
 
 def parse_args() -> argparse.Namespace:
+    """Parse the batch-results root and summary output directory."""
     parser = argparse.ArgumentParser(
         description="Summarize completed nf-core/rnaseq batch outputs for EXP383."
     )
@@ -33,17 +38,22 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
+### SMALL FILE HELPERS ########################################################
+
 
 def read_tsv(path: Path) -> list[dict[str, str]]:
+    """Read a small tabular MultiQC export into memory."""
     with path.open(newline="") as handle:
         return list(csv.DictReader(handle, delimiter="\t"))
 
 
 def is_sample_row(sample_name: str) -> bool:
+    """Exclude per-read companion rows such as 'Sample Read 1'."""
     return not (sample_name.endswith(" Read 1") or sample_name.endswith(" Read 2"))
 
 
 def safe_float(value: str | None) -> float | None:
+    """Convert a numeric-looking string to float while preserving empties as None."""
     if value is None:
         return None
     value = value.strip()
@@ -53,6 +63,7 @@ def safe_float(value: str | None) -> float | None:
 
 
 def mean(values: Iterable[float | None]) -> float | None:
+    """Average a sequence of optional floats, skipping missing entries."""
     filtered = [value for value in values if value is not None]
     if not filtered:
         return None
@@ -60,12 +71,16 @@ def mean(values: Iterable[float | None]) -> float | None:
 
 
 def fmt(value: float | None, digits: int = 2) -> str:
+    """Format summary values consistently for the Markdown report."""
     if value is None:
         return "NA"
     return f"{value:.{digits}f}"
 
+### BATCH SUMMARIES ###########################################################
+
 
 def summarise_batch(results_root: Path, batch_tag: str, population: str) -> dict[str, object]:
+    """Summarize one per-population nf-core result directory."""
     batch_dir = results_root / batch_tag
     data_dir = batch_dir / "multiqc" / "multiqc_report_data"
     general_stats = read_tsv(data_dir / "multiqc_general_stats.txt")
@@ -129,6 +144,7 @@ def summarise_batch(results_root: Path, batch_tag: str, population: str) -> dict
 
 
 def summarise_overall(batch_summaries: list[dict[str, object]]) -> dict[str, object]:
+    """Combine per-population summaries into one overall dataset summary."""
     overall = {
         "population": "ALL",
         "sample_count": sum(int(batch["sample_count"]) for batch in batch_summaries),
@@ -168,8 +184,11 @@ def summarise_overall(batch_summaries: list[dict[str, object]]) -> dict[str, obj
         overall[key] = weighted_sum / total_samples if total_samples else None
     return overall
 
+### OUTPUT WRITING ############################################################
+
 
 def write_population_summary_tsv(out_path: Path, rows: list[dict[str, object]]) -> None:
+    """Write the machine-readable per-population summary table."""
     fieldnames = [
         "population",
         "sample_count",
@@ -202,6 +221,7 @@ def write_population_summary_tsv(out_path: Path, rows: list[dict[str, object]]) 
 
 
 def markdown_table(rows: list[dict[str, object]]) -> str:
+    """Render the main Markdown summary table."""
     header = (
         "| Population | Samples | Raw pairs/sample (M) | fastp survive % | "
         "Adapter % | Q30 % | rRNA align % | Filtered pairs/sample (M) | "
@@ -230,6 +250,7 @@ def markdown_table(rows: list[dict[str, object]]) -> str:
 
 
 def write_markdown_summary(out_path: Path, batch_summaries: list[dict[str, object]], overall: dict[str, object]) -> None:
+    """Write the project-facing Markdown summary report."""
     lines = [
         "# EXP383 nf-core/rnaseq Summary",
         "",
@@ -277,8 +298,11 @@ def write_markdown_summary(out_path: Path, batch_summaries: list[dict[str, objec
     ]
     out_path.write_text("\n".join(lines) + "\n")
 
+### MAIN WORKFLOW #############################################################
+
 
 def main() -> None:
+    """Summarize all completed batches and write TSV, JSON, and Markdown outputs."""
     args = parse_args()
     results_root = Path(args.results_root).resolve()
     outdir = Path(args.outdir).resolve()

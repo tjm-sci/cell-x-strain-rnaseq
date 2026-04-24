@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+### SCRIPT SETUP ##############################################################
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
@@ -21,6 +23,12 @@ selected_populations=()
 nextflow_args=()
 cleanup_work="true"
 
+### COMMAND-LINE ARGUMENTS ####################################################
+
+# Keep the wrapper intentionally narrow:
+# - optional per-population reruns
+# - optional work-directory retention
+# - everything else passes straight through to Nextflow
 while (($#)); do
   case "$1" in
     --population)
@@ -39,8 +47,10 @@ while (($#)); do
       nextflow_args+=("$1")
       shift
       ;;
-  esac
+    esac
 done
+
+### POPULATION SELECTION ######################################################
 
 if ((${#selected_populations[@]} == 0)); then
   selected_populations=("${populations[@]}")
@@ -60,6 +70,8 @@ if ((${#ordered_populations[@]} == 0)); then
   exit 1
 fi
 
+### SHARED DIRECTORY SETUP ####################################################
+
 mkdir -p "${logs_root}" "${results_root}" "${work_root}" "${shared_reference_root}" "${NXF_HOME}" "${NXF_CONDA_CACHEDIR}"
 
 echo "Rebuilding merged master samplesheet and population batch sheets..."
@@ -69,6 +81,10 @@ echo
 total_runs="${#ordered_populations[@]}"
 run_index=0
 
+### BATCH LOOP ################################################################
+
+# Each sorted population is run separately so that the working SSD can be
+# recycled between batches.
 for population in "${ordered_populations[@]}"; do
   run_index="$((run_index + 1))"
   case "${population}" in
@@ -105,6 +121,8 @@ for population in "${ordered_populations[@]}"; do
   sample_count="$(( $(wc -l < "${input_sheet}") - 1 ))"
   rm -f "${console_log}" "${nextflow_log}" "${report_file}" "${trace_file}" "${timeline_file}" "${dag_file}"
 
+  # Build the Nextflow command as an array so additional user-supplied args can
+  # be appended safely without shell quoting problems.
   nf_cmd=(
     mamba run -n rnaseq
     nextflow
@@ -130,6 +148,8 @@ for population in "${ordered_populations[@]}"; do
   if ((${#nextflow_args[@]} > 0)); then
     nf_cmd+=("${nextflow_args[@]}")
   fi
+
+  ### BATCH EXECUTION #########################################################
 
   printf '\n============================================================\n'
   printf 'Batch %d/%d\n' "${run_index}" "${total_runs}"
@@ -169,5 +189,7 @@ for population in "${ordered_populations[@]}"; do
     printf 'Keeping completed work directory: %s\n' "${workdir}"
   fi
 done
+
+### FINAL STATUS ##############################################################
 
 printf '\nAll requested batches completed successfully.\n'
