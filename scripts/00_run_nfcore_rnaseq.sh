@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# This is a command-line wrapper for running the nf-core/rnaseq pipeline on each FANS sorted
+# population batch. Options and parameters are passed in a yaml file, and the wrapper handles
+# constructing the appropriate Nextflow command for each batch, as well as setting up shared
+# directories and logging.
+# The script was designed to work around a lack of local storage space, so writes intermediate
+# files to a fast SSD and final results to a larger HDD, with the option to keep or delete work
+# directories after successful runs (I had to delete them due to space constraints).
+# Usage:
+#   ./scripts/00_run_nfcore_rnaseq.sh [--population <population>]...
+
 ### SCRIPT SETUP ##############################################################
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

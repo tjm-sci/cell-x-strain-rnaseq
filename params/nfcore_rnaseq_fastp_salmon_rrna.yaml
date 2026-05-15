@@ -26,6 +26,6 @@ extra_salmon_quant_args: "--seqBias --gcBias"
 # Optional: Path for non-default SortMeRNA/Bowtie2 references.
 # ribo_database_manifest: /absolute/path/to/ribo_database_manifest.txt
 
-# Optional:Pathto exisiting Salmon index, avids regeneration of the index.
+# Optional: Path to existing Salmon index, avoids regeneration of the index (computationally expensive).
 # salmon_index: /absolute/path/to/salmon_index
 # transcript_fasta: /absolute/path/to/transcripts.fa.gz

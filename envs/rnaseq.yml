@@ -4,7 +4,6 @@ channels:
   - bioconda
 dependencies:
   # Core workflow runtime
-  # Nextflow docs require Java 17 or later.
   - openjdk=17
   - nextflow
   - graphviz
@@ -20,6 +19,7 @@ dependencies:
   - bioconductor-variancepartition
 
   # Plotting and report-friendly tables
+  - r-here
   - r-dplyr
   - r-ggplot2
   - r-ggrepel

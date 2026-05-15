@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-# This script builds a whole-dataset expression overview for all 286 samples.
+# This script builds a whole-dataset expression overview for the retained samples.
 #
 # It is intentionally separate from the population-specific DEA workflow. The
 # goal here is not differential testing, but a project-level QC view that helps
@@ -10,7 +10,7 @@
 # - do key technical variables line up with the dominant axes of variation?
 #
 # The workflow is deliberately simple:
-# 1. load the unified Salmon / tximport handoff object from script 01
+# 1. load the prepared Salmon / tximport output object from script 01
 # 2. apply one light global expression filter
 # 3. build a DESeq2 object with design ~ 1
 # 4. run a blind variance stabilizing transform
@@ -27,7 +27,8 @@ suppressPackageStartupMessages({
     "pheatmap",
     "stringr",
     "tibble",
-    "tidyr"
+    "tidyr",
+    "here"
   )
 
   missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
@@ -41,17 +42,9 @@ suppressPackageStartupMessages({
   }
 })
 
-# Load the shared project plotting helpers from the same scripts directory.
-get_script_dir <- function() {
-  script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-  if (length(script_arg) == 0) {
-    return(normalizePath(getwd(), winslash = "/", mustWork = TRUE))
-  }
-
-  dirname(normalizePath(sub("^--file=", "", script_arg[[1]]), winslash = "/", mustWork = TRUE))
-}
-
-source(file.path(get_script_dir(), "plot_style.R"))
+suppressMessages(here::i_am("scripts/01b_global_sample_overview.R"))
+source(here::here("scripts", "path_helpers.R"))
+source(here::here("scripts", "plot_style.R"))
 
 # -----------------------------
 # Command-line argument parsing
@@ -127,7 +120,7 @@ write_tsv <- function(x, path, row_names = FALSE) {
 metadata_to_tibble <- function(coldata) {
   metadata_tbl <- tibble::as_tibble(coldata)
 
-  # The handoff object already carries a `sample` column. We keep it as the
+  # The prepared input object already carries a `sample` column. We keep it as the
   # canonical sample identifier and only fall back to row names if an older
   # object lacks that column.
   if (!"sample" %in% colnames(metadata_tbl)) {
@@ -620,6 +613,8 @@ save_marker_heatmap <- function(vsd, coldata, marker_table, output_file, run_lab
 # Main script logic
 # -----------------
 args <- parse_cli_args()
+args$input_rds <- resolve_project_path(args$input_rds)
+args$output_dir <- resolve_project_path(args$output_dir)
 stop_if_missing(args$input_rds, "Prepared input RDS")
 
 analysis_input <- readRDS(args$input_rds)

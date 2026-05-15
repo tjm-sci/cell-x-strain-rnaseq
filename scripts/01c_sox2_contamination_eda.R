@@ -23,7 +23,8 @@ suppressPackageStartupMessages({
     "ggplot2",
     "stringr",
     "tibble",
-    "tidyr"
+    "tidyr",
+    "here"
   )
 
   missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
@@ -41,16 +42,9 @@ suppressPackageStartupMessages({
 
 # Reuse the project-wide colour palette and ggplot theme so these exploratory
 # figures sit naturally beside the 01b global overview outputs.
-get_script_dir <- function() {
-  script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
-  if (length(script_arg) == 0) {
-    return(normalizePath(getwd(), winslash = "/", mustWork = TRUE))
-  }
-
-  dirname(normalizePath(sub("^--file=", "", script_arg[[1]]), winslash = "/", mustWork = TRUE))
-}
-
-source(file.path(get_script_dir(), "plot_style.R"))
+suppressMessages(here::i_am("scripts/01c_sox2_contamination_eda.R"))
+source(here::here("scripts", "path_helpers.R"))
+source(here::here("scripts", "plot_style.R"))
 
 ### COMMAND-LINE ARGUMENTS ####################################################
 
@@ -135,7 +129,7 @@ metadata_to_tibble <- function(coldata) {
 ### LOAD THE CACHED GLOBAL OVERVIEW INPUT #####################################
 
 # 01c asks exactly the same question on the same transformed expression space as
-# 01b, so it is cleaner to reuse the cached overview handoff rather than
+# 01b, so it is cleaner to reuse the cached overview output object rather than
 # rebuilding the global filter and VST matrix.
 read_overview_input <- function(overview_rds) {
   overview_input <- readRDS(overview_rds)
@@ -428,6 +422,10 @@ save_marker_expression_plot <- function(marker_expression, output_file) {
 ### MAIN SCRIPT LOGIC #########################################################
 
 args <- parse_cli_args()
+args$overview_rds <- resolve_project_path(args$overview_rds)
+args$input_rds <- resolve_project_path(args$input_rds)
+args$zhang_csv <- resolve_project_path(args$zhang_csv)
+args$output_dir <- resolve_project_path(args$output_dir)
 stop_if_missing(args$overview_rds, "01b cached overview RDS")
 stop_if_missing(args$zhang_csv, "Zhang reference CSV")
 

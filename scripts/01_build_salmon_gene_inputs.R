@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-# This script builds the single handoff object used by downstream DEA scripts.
+# This script builds the single output object used by downstream DEA scripts.
 #
 # The nf-core/rnaseq run was executed in four separate population batches, so
 # the Salmon outputs, tx2gene tables, and MultiQC summaries currently live in
@@ -17,7 +17,7 @@
 # shared starting point.
 
 suppressPackageStartupMessages({
-  required_packages <- c("tximport", "dplyr", "tibble")
+  required_packages <- c("tximport", "dplyr", "tibble", "here")
   missing_packages <- required_packages[!vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)]
 
   if (length(missing_packages) > 0) {
@@ -29,6 +29,9 @@ suppressPackageStartupMessages({
     )
   }
 })
+
+suppressMessages(here::i_am("scripts/01_build_salmon_gene_inputs.R"))
+source(here::here("scripts", "path_helpers.R"))
 
 ### COMMAND-LINE ARGUMENTS ####################################################
 
@@ -82,6 +85,50 @@ stop_if_missing <- function(path, label) {
   if (!file.exists(path)) {
     stop(sprintf("%s not found: %s", label, path), call. = FALSE)
   }
+}
+
+load_excluded_mouse_ids <- function(repo_root) {
+  exclusion_flags_file <- file.path(
+    dirname(repo_root),
+    "exp383_mouse_metadata",
+    "output",
+    "exp383_mouse_exclusion_flags.csv"
+  )
+
+  if (!file.exists(exclusion_flags_file)) {
+    stop(
+      "Project-level mouse exclusion flags not found: ",
+      exclusion_flags_file,
+      ". Run exp383_mouse_metadata/scripts/05_check_non_experimental_culls.R first.",
+      call. = FALSE
+    )
+  }
+
+  flags <- utils::read.csv(exclusion_flags_file, stringsAsFactors = FALSE, check.names = FALSE)
+  required_columns <- c("animal_id", "exclude_from_downstream", "exclusion_applies_to")
+  missing_columns <- setdiff(required_columns, colnames(flags))
+  if (length(missing_columns) > 0) {
+    stop(
+      sprintf("Mouse exclusion flags missing columns: %s", paste(missing_columns, collapse = ", ")),
+      call. = FALSE
+    )
+  }
+
+  flags |>
+    dplyr::mutate(
+      exclude_from_downstream = as.character(.data$exclude_from_downstream) %in% c("TRUE", "true", "1")
+    ) |>
+    dplyr::filter(
+      .data$exclude_from_downstream,
+      .data$exclusion_applies_to %in% c("all_exp383_repos", basename(repo_root))
+    ) |>
+    dplyr::pull(.data$animal_id) |>
+    as.character() |>
+    unique()
+}
+
+sample_mouse_ids <- function(sample_ids) {
+  sub("-.*$", "", as.character(sample_ids))
 }
 
 # Write small tabular outputs in a consistent TSV format for later inspection.
@@ -365,17 +412,27 @@ load_and_check_tx2gene <- function(results_root) {
 ### MAIN WORKFLOW #############################################################
 
 args <- parse_cli_args()
-results_root <- normalizePath(args$results_root, winslash = "/", mustWork = FALSE)
-metadata_csv <- normalizePath(args$metadata_csv, winslash = "/", mustWork = FALSE)
-output_dir <- args$output_dir
+repo_root <- here::here()
+results_root <- resolve_project_path(args$results_root)
+metadata_csv <- resolve_project_path(args$metadata_csv)
+output_dir <- resolve_project_path(args$output_dir)
 
 stop_if_missing(results_root, "Results root")
 stop_if_missing(metadata_csv, "Metadata CSV")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
+excluded_mouse_ids <- load_excluded_mouse_ids(repo_root)
+
 message("Reading metadata: ", metadata_csv)
 metadata <- utils::read.csv(metadata_csv, stringsAsFactors = FALSE, check.names = FALSE) |>
   clean_metadata()
+
+# Remove mice culled for non-experimental reasons.
+# See ../exp383_mouse_metadata/output/exp383_mouse_exclusion_flags.csv.
+metadata_row_count <- nrow(metadata)
+metadata <- metadata |>
+  dplyr::filter(!.data$mouse_n %in% excluded_mouse_ids)
+message("Excluded RNA-seq metadata rows for non-experimental cull reasons: ", metadata_row_count - nrow(metadata))
 
 message("Discovering Salmon quant files under: ", results_root)
 manifest <- discover_quant_files(results_root)
@@ -388,6 +445,11 @@ observed_samples <- manifest$sample
 
 missing_quant <- setdiff(expected_samples, observed_samples)
 extra_quant <- setdiff(observed_samples, expected_samples)
+ignored_extra_quant <- extra_quant[sample_mouse_ids(extra_quant) %in% excluded_mouse_ids]
+extra_quant <- setdiff(extra_quant, ignored_extra_quant)
+if (length(ignored_extra_quant) > 0) {
+  message("Ignoring Salmon quant files for excluded mice: ", length(ignored_extra_quant))
+}
 if (length(missing_quant) > 0) {
   stop(
     sprintf(
@@ -409,6 +471,11 @@ if (length(extra_quant) > 0) {
 
 missing_qc <- setdiff(expected_samples, qc_metrics$sample)
 extra_qc <- setdiff(qc_metrics$sample, expected_samples)
+ignored_extra_qc <- extra_qc[sample_mouse_ids(extra_qc) %in% excluded_mouse_ids]
+extra_qc <- setdiff(extra_qc, ignored_extra_qc)
+if (length(ignored_extra_qc) > 0) {
+  message("Ignoring MultiQC sample metrics for excluded mice: ", length(ignored_extra_qc))
+}
 if (length(missing_qc) > 0) {
   stop(
     sprintf(

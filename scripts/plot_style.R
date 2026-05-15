@@ -1,8 +1,6 @@
 # Shared plot styling helpers for the EXP383 RNA-seq project.
 #
-# These settings deliberately mirror the visual conventions used in the
-# neighbouring FANS analysis repo:
-#   ../exp383-analysis_of_FANS_data
+# These settings mirror the visual conventions in other repos belonging to this project.
 #
 # Function:
 # - keep population colours stable across the project
@@ -102,8 +100,7 @@ exp383_population_annotation_colors <- function() {
   list(population = display_palette)
 }
 
-# High-resolution raster settings for project figures. PNG is used throughout
-# because it is broadly compatible with slides, documents, and web exports.
+# High-resolution raster settings for project figures. PNG is used throughout.
 exp383_plot_dpi <- 300
 
 exp383_save_ggplot <- function(output_file, plot, width, height, dpi = exp383_plot_dpi) {
