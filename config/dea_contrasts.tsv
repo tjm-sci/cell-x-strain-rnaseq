@@ -1,0 +1,10 @@
+contrast_id	contrast_family	numerator_group	denominator_group	contrast_label
+RML_60_vs_CBH_60	infected_vs_cbh	group_RML_60	group_CBH_60	RML 60 dpi vs CBH 60 dpi
+ME7_60_vs_CBH_60	infected_vs_cbh	group_ME7_60	group_CBH_60	ME7 60 dpi vs CBH 60 dpi
+22L_60_vs_CBH_60	infected_vs_cbh	group_22L_60	group_CBH_60	22L 60 dpi vs CBH 60 dpi
+RML_90_vs_CBH_90	infected_vs_cbh	group_RML_90	group_CBH_90	RML 90 dpi vs CBH 90 dpi
+ME7_90_vs_CBH_90	infected_vs_cbh	group_ME7_90	group_CBH_90	ME7 90 dpi vs CBH 90 dpi
+22L_90_vs_CBH_90	infected_vs_cbh	group_22L_90	group_CBH_90	22L 90 dpi vs CBH 90 dpi
+RML_120_vs_CBH_120	infected_vs_cbh	group_RML_120	group_CBH_120	RML 120 dpi vs CBH 120 dpi
+ME7_120_vs_CBH_120	infected_vs_cbh	group_ME7_120	group_CBH_120	ME7 120 dpi vs CBH 120 dpi
+22L_120_vs_CBH_120	infected_vs_cbh	group_22L_120	group_CBH_120	22L 120 dpi vs CBH 120 dpi

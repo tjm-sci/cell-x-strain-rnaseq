@@ -8,7 +8,8 @@
 # stable object that:
 #
 # 1. records the `quant.sf` path for every sample
-# 2. cleans and types the project metadata once
+# 2. cleans and types the project metadata once so types are the same and correct
+#    When we split the downstream analysis by sorted population.
 # 3. joins one row of sample-level QC metrics per sample
 # 4. runs tximport once in a reproducible way
 # 5. saves the resulting object for all later scripts
@@ -35,8 +36,7 @@ source(here::here("scripts", "path_helpers.R"))
 
 ### COMMAND-LINE ARGUMENTS ####################################################
 
-# Keep the command-line surface small. This script is only meant to be reused
-# within this repo, not as a general package-style tool.
+
 parse_cli_args <- function() {
   defaults <- list(
     results_root = "/media/tmurphy/4TB_HDD/exp383/nfcore_rnaseq",

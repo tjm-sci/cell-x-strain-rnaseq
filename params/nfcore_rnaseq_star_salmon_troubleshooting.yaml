@@ -1,0 +1,28 @@
+input: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/metadata/batches/exp383_nfcore_rnaseq_PU1.csv
+outdir: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/results/nfcore_rnaseq_star_salmon_troubleshooting/PU1
+
+trimmer: fastp
+remove_ribo_rna: true
+ribo_removal_tool: bowtie2
+ribo_database_manifest: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/rrna/eukaryote_rrna_manifest.txt
+
+# Troubleshooting mode: genome alignment plus Salmon quantification.
+aligner: star_salmon
+skip_alignment: false
+
+# Keep the pilot storage-light unless BAMs or intermediate alignments are needed.
+save_reference: false
+save_merged_fastq: false
+save_trimmed: false
+save_non_ribo_reads: false
+save_align_intermeds: false
+save_unaligned: false
+
+# Reference locked for this project: Ensembl release 115 / GRCm39.
+fasta: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/reference/Mus_musculus.GRCm39.dna.primary_assembly.fa.gz
+gtf: /home/tmurphy/exp383_code/cell-x-strain-rnaseq/resources/reference/Mus_musculus.GRCm39.115.gtf.gz
+
+extra_salmon_quant_args: "--seqBias --gcBias"
+
+# Leave unset unless all libraries truly share one known type.
+# salmon_quant_libtype: A

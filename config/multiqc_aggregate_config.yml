@@ -1,6 +1,6 @@
 # Aggregate MultiQC config for this project.
 #
-# This is vendored from the nf-core/rnaseq 3.23.0 MultiQC config so that the
+# This is copied from the nf-core/rnaseq 3.23.0 MultiQC config so that the
 # standalone aggregate report uses the same sample-name cleaning and module
 # layout as the per-batch pipeline reports.
 

@@ -1,0 +1,28 @@
+gene_symbol	panel	expected_population	expected_direction	notes
+Aif1	PU1_prion_response	PU1	up	Microglia/macrophage activation marker.
+C1qa	PU1_prion_response	PU1	up	Complement component expected in activated microglia.
+C1qb	PU1_prion_response	PU1	up	Complement component expected in activated microglia.
+C1qc	PU1_prion_response	PU1	up	Complement component expected in activated microglia.
+Tyrobp	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Trem2	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Apoe	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Lpl	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Cst7	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Itgax	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Clec7a	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Cx3cr1	PU1_homeostatic_microglia	PU1	down	Homeostatic microglial marker.
+P2ry12	PU1_homeostatic_microglia	PU1	down	Homeostatic microglial marker.
+Tmem119	PU1_homeostatic_microglia	PU1	down	Homeostatic microglial marker.
+Hexb	PU1_microglia	PU1	up	Microglia marker included as a sanity check.
+Spp1	PU1_prion_response	PU1	up	DAM/prion-response microglial marker.
+Lgals3	PU1_prion_response	PU1	up	Activation marker.
+B2m	PU1_interferon_antigen_presentation	PU1	up	Antigen presentation / immune activation marker.
+H2-Ab1	PU1_interferon_antigen_presentation	PU1	up	Antigen presentation marker.
+Stat1	PU1_interferon	PU1	up	Interferon-response transcription factor.
+Irf7	PU1_interferon	PU1	up	Interferon-response transcription factor.
+Isg15	PU1_interferon	PU1	up	Interferon-stimulated gene.
+Ifit1	PU1_interferon	PU1	up	Interferon-stimulated gene.
+Ifit3	PU1_interferon	PU1	up	Interferon-stimulated gene.
+Oasl2	PU1_interferon	PU1	up	Interferon-stimulated gene.
+Gfap	contamination_sanity_check	PU1	up	Astrocyte marker; useful as PU1 contamination/cross-population sanity check.
+Serpina3n	contamination_sanity_check	PU1	up	Astrocyte/reactive marker; useful as PU1 contamination/cross-population sanity check.

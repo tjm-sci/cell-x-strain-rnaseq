@@ -1,24 +1,16 @@
 #!/usr/bin/env Rscript
 
-# This script implements two linked tasks for one sorted nuclei population per script run:
+# This script runs formal technical covariate screening for one sorted nuclei
+# population per script run.
 #
-# 1. Formal technical covariate selection
-#    We screen technical variables using:
-#    - pairwise collinearity checks
-#    - blind (no covariates included) PCA on the VST-tranformed count matrix
-#    - weighted covariate-to-PC association metrics
-#    - multivariable variancePartition
-#    The goal is to return an explicit, machine-readable set of technical
-#    covariates to carry forward into DEA.
+# We screen technical variables using:
+# - pairwise collinearity checks
+# - blind (no covariates included) PCA on the VST-transformed count matrix
+# - weighted covariate-to-PC association metrics
+# - multivariable variancePartition
 #
-# 2. DESeq2 design formula testing
-#    We then fit a small number of interpretable DESeq2 formulas, including a
-#    recommended formula built from the selected covariates, and write the usual
-#    PCA / distance / size-factor / dispersion diagnostics for each.
-#    The final formula will be used for DEA.
-#
-# The script requires the output object from 01_build_salmon_gene_inputs.R
-# and the EXP383 metadata structure.
+# The script requires the label-corrected output object from
+# 01e_sample_label_correction.R and the EXP383 metadata structure.
 
 suppressPackageStartupMessages({
   required_packages <- c("DESeq2", "ggplot2", "pheatmap", "variancePartition", "here")
@@ -38,9 +30,10 @@ suppressMessages(here::i_am("scripts/02b_covariate_screening_main_script.R"))
 source(here::here("scripts", "path_helpers.R"))
 
 ### Fixed settings ###
-# Set paths and thresholds for the covariate screening and design formula testing. These are kept the same across populations.
+# Set paths and thresholds for covariate screening. These are kept the same
+# across populations.
 SETTINGS <- list(
-  input_rds = "results/dea/01_build_salmon_gene_inputs/exp383_salmon_gene_input.rds",
+  input_rds = "results/dea/01e_sample_label_correction/exp383_salmon_gene_input_label_corrected.rds",
   output_root = "results/dea/02_covariate_screening",
   min_count = 10,
   min_samples = "auto",
@@ -63,16 +56,14 @@ args <- parse_cli_args()
 SETTINGS$input_rds <- resolve_project_path(SETTINGS$input_rds)
 SETTINGS$output_root <- resolve_project_path(SETTINGS$output_root)
 input_rds <- SETTINGS$input_rds
-design_tsv <- resolve_project_path(args$design_tsv)
-stop_if_missing(input_rds, "Prepared input RDS")
-stop_if_missing(design_tsv, "Design TSV")
+stop_if_missing(input_rds, "Label-corrected input RDS")
 
 analysis_input <- readRDS(input_rds)
 required_objects <- c("txi_gene", "sample_metadata")
 missing_objects <- setdiff(required_objects, names(analysis_input))
 if (length(missing_objects) > 0) {
   stop(
-    "Input RDS does not look like the output of 01_build_salmon_gene_inputs.R. ",
+    "Input RDS does not look like the corrected output used for covariate screening. ",
     "Missing objects: ", paste(missing_objects, collapse = ", "),
     call. = FALSE
   )
@@ -123,8 +114,8 @@ txi_pop_filtered <- subset_txi(
   keep_cols = rep(TRUE, ncol(txi_pop$counts))
 )
 
-shared_root <- file.path(SETTINGS$output_root, args$population, "shared")
-dir.create(shared_root, recursive = TRUE, showWarnings = FALSE)
+population_root <- file.path(SETTINGS$output_root, args$population)
+dir.create(population_root, recursive = TRUE, showWarnings = FALSE)
 
 filter_summary <- data.frame(
   population = args$population,
@@ -137,16 +128,20 @@ filter_summary <- data.frame(
   stringsAsFactors = FALSE
 )
 
-write_tsv(filter_summary, file.path(shared_root, "filter_summary.tsv"))
+write_tsv(filter_summary, file.path(population_root, "filter_summary.tsv"))
 
-# ------------------------------
-# Shared formal selection stage
-# ------------------------------
-message("Running shared covariate screening for population: ", args$population)
+# ----------------------------
+# Formal covariate selection
+# ----------------------------
+message("Running covariate screening for population: ", args$population)
 
-screen_root <- file.path(shared_root, "covariate_screening")
+screen_root <- file.path(population_root, "covariate_screening")
 screen_plot_dir <- file.path(screen_root, "plots")
+biology_balance_plot_dir <- file.path(screen_plot_dir, "selected_covariates_by_biological_variables")
+biology_balance_data_dir <- file.path(screen_root, "selected_covariates_by_biological_variables_data")
 dir.create(screen_plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(biology_balance_plot_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(biology_balance_data_dir, recursive = TRUE, showWarnings = FALSE)
 
 registry <- build_covariate_registry(coldata_pop)
 pairwise_associations <- build_pairwise_covariate_associations(coldata_pop, registry)
@@ -207,11 +202,38 @@ selection_metrics <- apply_formal_selection_rule(
 selected_covariates <- selection_metrics[selection_metrics$selected, , drop = FALSE]
 recommended_formula <- build_recommended_design_formula(selection_metrics)
 
-# Only the essential outputs are kept here: the final decision table, the
-# selected covariates, the recommended design, and the design list that will be
-# run in the second half of the script.
+# These outputs check whether final selected technical covariates are balanced
+# across the biological variables that define the planned DEA contrasts.
+biology_association_table <- build_selected_covariate_biology_associations(
+  coldata = coldata_pop,
+  selection_metrics = selection_metrics
+)
+numeric_biology_plot_data <- build_selected_numeric_covariate_biology_data(
+  coldata = coldata_pop,
+  selection_metrics = selection_metrics
+)
+categorical_biology_plot_data <- build_selected_categorical_covariate_biology_data(
+  coldata = coldata_pop,
+  selection_metrics = selection_metrics
+)
+
+# Keep the output focused on the screen itself: the full decision table, selected
+# covariates, thresholds, recommended design, and the plots that support the
+# covariate-selection decision.
 write_tsv(selection_metrics, file.path(screen_root, "covariate_selection_metrics.tsv"))
 write_tsv(selected_covariates, file.path(screen_root, "selected_covariates.tsv"))
+write_tsv(
+  biology_association_table,
+  file.path(biology_balance_data_dir, "selected_covariate_biological_associations.tsv")
+)
+write_tsv(
+  numeric_biology_plot_data,
+  file.path(biology_balance_data_dir, "selected_numeric_covariates_by_biological_variables.tsv")
+)
+write_tsv(
+  categorical_biology_plot_data,
+  file.path(biology_balance_data_dir, "selected_categorical_covariates_by_biological_variables.tsv")
+)
 write_tsv(
   data.frame(
     pc_variance_threshold = SETTINGS$pc_variance_threshold,
@@ -229,13 +251,15 @@ save_pca_scree_plot(
   pc_variance_table = pc_variance_table,
   n_selected_pcs = length(selected_pcs),
   variance_threshold = SETTINGS$pc_variance_threshold,
-  output_file = file.path(screen_plot_dir, "blind_pca_scree.png")
+  output_file = file.path(screen_plot_dir, "blind_pca_scree.png"),
+  population = args$population
 )
 
 save_numeric_correlation_heatmap(
   coldata = coldata_pop,
   registry = formal_registry,
-  output_file = file.path(screen_plot_dir, "retained_numeric_covariate_correlations.png")
+  output_file = file.path(screen_plot_dir, "retained_numeric_covariate_correlations.png"),
+  population = args$population
 )
 
 plot_selection_metrics <- selection_metrics[selection_metrics$is_candidate, , drop = FALSE]
@@ -244,25 +268,56 @@ save_metric_barplot(
   metric_column = "max_weighted_pc_score",
   title_text = "Maximum weighted PC association score",
   y_label = "Max weighted PC score",
-  output_file = file.path(screen_plot_dir, "weighted_pc_scores.png")
+  output_file = file.path(screen_plot_dir, "weighted_pc_scores.png"),
+  subtitle_text = "PC variance fraction x association effect size squared.",
+  population = args$population
 )
 save_metric_barplot(
   plot_table = plot_selection_metrics,
   metric_column = "varpart_q3_percent",
-  title_text = "variancePartition Q3 by covariate",
-  y_label = "Q3 variance explained (%)",
-  output_file = file.path(screen_plot_dir, "variance_partition_q3.png")
+  title_text = "variancePartition Q3 by covariate (75th percentile across genes)",
+  y_label = "Q3 gene-level variance explained (%)",
+  output_file = file.path(screen_plot_dir, "variance_partition_q3.png"),
+  subtitle_text = "75th percentile across retained genes.",
+  population = args$population
 )
 save_metric_barplot(
   plot_table = plot_selection_metrics,
   metric_column = "varpart_max_percent",
-  title_text = "variancePartition max by covariate",
-  y_label = "Max variance explained (%)",
-  output_file = file.path(screen_plot_dir, "variance_partition_max.png")
+  title_text = "variancePartition max by covariate (largest single-gene value)",
+  y_label = "Maximum gene-level variance explained (%)",
+  output_file = file.path(screen_plot_dir, "variance_partition_max.png"),
+  subtitle_text = "Largest value observed for any retained gene.",
+  population = args$population
 )
 save_variance_partition_plot(
   varpart_object = variance_partition_results$varpart,
-  output_file = file.path(screen_plot_dir, "variance_partition_multivariate.png")
+  output_file = file.path(screen_plot_dir, "variance_partition_multivariate.png"),
+  population = args$population
+)
+
+save_selected_numeric_covariate_biology_plot(
+  plot_data = numeric_biology_plot_data,
+  biological_variable = "group_assignment",
+  output_file = file.path(biology_balance_plot_dir, "selected_numeric_covariates_by_group_assignment.png"),
+  population = args$population
+)
+save_selected_numeric_covariate_biology_plot(
+  plot_data = numeric_biology_plot_data,
+  biological_variable = "dpi",
+  output_file = file.path(biology_balance_plot_dir, "selected_numeric_covariates_by_dpi.png"),
+  population = args$population
+)
+save_selected_numeric_covariate_biology_plot(
+  plot_data = numeric_biology_plot_data,
+  biological_variable = "inoculum",
+  output_file = file.path(biology_balance_plot_dir, "selected_numeric_covariates_by_inoculum.png"),
+  population = args$population
+)
+save_selected_categorical_covariate_group_heatmaps(
+  count_data = categorical_biology_plot_data,
+  output_dir = biology_balance_plot_dir,
+  population = args$population
 )
 
 blind_pca_plot_table <- blind_pca_table
@@ -275,93 +330,16 @@ for (var_name in shared_plot_covariates) {
   save_pca_plot(
     pca_table = blind_pca_plot_table,
     color_var = var_name,
-    title_text = sprintf("Blind PCA: %s", var_name),
+    title_text = prefix_plot_title(args$population, sprintf("Blind PCA: %s", var_name)),
     output_file = file.path(screen_plot_dir, sprintf("blind_pca_by_%s.png", var_name))
   )
 }
 
-# ---------------------------------------
-# Design-specific DESeq2 QC and behaviour
-# ---------------------------------------
-design_table <- load_design_table(design_tsv)
-design_table <- append_recommended_design(design_table, recommended_formula)
-write_tsv(design_table, file.path(shared_root, "designs_run.tsv"))
+design_summary <- data.frame(
+  design_id = "selected_covariates",
+  design_formula = recommended_formula,
+  stringsAsFactors = FALSE
+)
+write_tsv(design_summary, file.path(population_root, "designs_run.tsv"))
 
-for (i in seq_len(nrow(design_table))) {
-  design_id <- design_table$design_id[[i]]
-  design_formula <- design_table$design_formula[[i]]
-  design_formula_obj <- stats::as.formula(design_formula)
-
-  design_dir <- file.path(SETTINGS$output_root, args$population, design_id)
-  plot_dir <- file.path(design_dir, "plots")
-  table_dir <- file.path(design_dir, "tables")
-  dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
-  dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
-
-  message("Testing design: ", design_id, " -> ", design_formula)
-
-  writeLines(
-    c(
-      paste0("population: ", args$population),
-      paste0("design_id: ", design_id),
-      paste0("design_formula: ", design_formula),
-      paste0("min_count: ", SETTINGS$min_count),
-      paste0("min_samples: ", min_samples)
-    ),
-    con = file.path(design_dir, "design_metadata.txt")
-  )
-
-  dds <- DESeq2::DESeqDataSetFromTximport(
-    txi = txi_pop_filtered,
-    colData = coldata_pop,
-    design = design_formula_obj
-  )
-  dds <- DESeq2::DESeq(dds, quiet = TRUE)
-  vsd <- DESeq2::vst(dds, blind = FALSE)
-
-  sample_scaling_factors <- get_sample_scaling_factors(dds)
-  size_factor_table <- data.frame(
-    sample = colnames(dds),
-    size_factor = sample_scaling_factors,
-    group_assignment = coldata_pop$group_assignment,
-    stringsAsFactors = FALSE
-  )
-
-  pca_table <- compute_pca_table(vsd, coldata_pop)
-  attr(pca_table, "percent_var") <- attr(pca_table, "percent_var")[1:2]
-
-  design_matrix <- model.matrix(design_formula_obj, data = as.data.frame(SummarizedExperiment::colData(dds)))
-  write_tsv(as.data.frame(design_matrix), file.path(table_dir, "design_matrix.tsv"), row_names = TRUE)
-  write_tsv(size_factor_table, file.path(table_dir, "size_factors.tsv"))
-  writeLines(DESeq2::resultsNames(dds), con = file.path(table_dir, "results_names.txt"))
-
-  save_sample_distance_heatmap(
-    vsd = vsd,
-    annotation_df = as.data.frame(coldata_pop[, intersect(
-      c("group_assignment", "inoculation_batch"),
-      colnames(coldata_pop)
-    ), drop = FALSE]),
-    output_file = file.path(plot_dir, "sample_distance_heatmap.png")
-  )
-  save_dispersion_plot(dds, file.path(plot_dir, "dispersion_plot.png"))
-  save_size_factor_plot(size_factor_table, file.path(plot_dir, "size_factors.png"))
-
-  # The design-comparison stage only needs PCA plots for the biology of interest
-  # and the terms actually present in the current design formula.
-  variables_to_plot <- unique(c("group_assignment", all.vars(design_formula_obj)))
-
-  for (var_name in variables_to_plot) {
-    if (!var_name %in% colnames(pca_table)) {
-      next
-    }
-
-    save_pca_plot(
-      pca_table = pca_table,
-      color_var = var_name,
-      title_text = sprintf("PCA: %s | %s", design_id, var_name),
-      output_file = file.path(plot_dir, sprintf("pca_by_%s.png", var_name))
-    )
-  }
-}
-
-message("Finished covariate screening workflow for population: ", args$population)
+message("Finished covariate screen for population: ", args$population)

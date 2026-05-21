@@ -4,13 +4,10 @@
 # -----------------------------
 # Command-line argument parsing
 # -----------------------------
-# Only two inputs are exposed at the command line:
-# - which sorted population to analyse from start to finish
-# - which design table to use for the DESeq2 design-comparison stage
+# Only the sorted population is exposed at the command line.
 parse_cli_args <- function() {
   defaults <- list(
-    population = NA_character_,
-    design_tsv = "config/dea_designs_initial.tsv"
+    population = NA_character_
   )
 
   args <- commandArgs(trailingOnly = TRUE)
@@ -70,31 +67,12 @@ write_tsv <- function(x, path, row_names = FALSE) {
   )
 }
 
-sanitize_design_id <- function(x) {
-  x <- gsub("[^A-Za-z0-9]+", "_", x)
-  x <- gsub("_+", "_", x)
-  x <- gsub("^_|_$", "", x)
-  if (nchar(x) == 0) {
-    x <- "design"
-  }
-  x
-}
-
-get_sample_scaling_factors <- function(dds) {
-  size_factors <- DESeq2::sizeFactors(dds)
-  if (!is.null(size_factors)) {
-    return(size_factors)
+prefix_plot_title <- function(population, title_text) {
+  if (is.null(population) || is.na(population) || population == "") {
+    return(title_text)
   }
 
-  normalization_factors <- DESeq2::normalizationFactors(dds)
-  if (is.null(normalization_factors)) {
-    stop(
-      "DESeq2 object has neither sizeFactors nor normalizationFactors.",
-      call. = FALSE
-    )
-  }
-
-  exp(colMeans(log(normalization_factors)))
+  paste0(population, ": ", title_text)
 }
 
 # -----------------------------
@@ -256,6 +234,20 @@ compute_shared_filter <- function(count_matrix, grouping, min_count, min_samples
 # Plotting helper functions
 # -------------------------
 # These helpers are tightly coupled to the files written by this analysis stage.
+set3_palette <- function(n) {
+  base_palette <- c(
+    "#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072",
+    "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5",
+    "#D9D9D9", "#BC80BD", "#CCEBC5", "#FFED6F"
+  )
+
+  if (n <= length(base_palette)) {
+    return(base_palette[seq_len(n)])
+  }
+
+  grDevices::colorRampPalette(base_palette)(n)
+}
+
 compute_pca_table <- function(vsd, coldata) {
   pca <- stats::prcomp(t(SummarizedExperiment::assay(vsd)), center = TRUE, scale. = FALSE)
   percent_var <- 100 * (pca$sdev^2 / sum(pca$sdev^2))
@@ -278,6 +270,8 @@ save_pca_plot <- function(pca_table, color_var, title_text, output_file) {
     return(invisible(NULL))
   }
 
+  color_values <- pca_table[[color_var]]
+  is_numeric_color <- is.numeric(color_values) || is.integer(color_values)
   percent_var <- attr(pca_table, "percent_var")
   p <- ggplot2::ggplot(
     pca_table,
@@ -292,74 +286,32 @@ save_pca_plot <- function(pca_table, color_var, title_text, output_file) {
       color = color_var
     )
 
-  if (identical(color_var, "population")) {
-    p <- p + exp383_scale_colour_population(name = "population")
+  if (is_numeric_color) {
+    p <- p + ggplot2::scale_colour_viridis_c(option = "viridis", na.value = "grey70")
+  } else if (identical(color_var, "group_assignment")) {
+    color_levels <- order_known_levels(color_values, exp383_group_assignment_levels)
+    p <- p + ggplot2::scale_colour_manual(
+      values = exp383_group_assignment_palette[color_levels],
+      breaks = color_levels,
+      labels = format_group_assignment_label(color_levels),
+      na.value = "grey70"
+    )
+  } else {
+    color_levels <- if (is.factor(color_values)) {
+      levels(droplevels(color_values))
+    } else {
+      unique(as.character(color_values[!is.na(color_values)]))
+    }
+    p <- p + ggplot2::scale_colour_manual(
+      values = stats::setNames(set3_palette(length(color_levels)), color_levels),
+      na.value = "grey70"
+    )
   }
 
   exp383_save_ggplot(output_file, plot = p, width = 7, height = 5.5)
 }
 
-save_sample_distance_heatmap <- function(vsd, annotation_df, output_file) {
-  sample_dist_matrix <- as.matrix(stats::dist(t(SummarizedExperiment::assay(vsd))))
-  sample_names <- colnames(SummarizedExperiment::assay(vsd))
-
-  # pheatmap expects annotation rows to be named with the same sample IDs as the
-  # matrix columns. We also only pass custom annotation colours when the
-  # annotation actually includes population, because the shared palette helper is
-  # population-specific.
-  annotation_df <- as.data.frame(annotation_df)
-  if (ncol(annotation_df) > 0) {
-    annotation_df <- annotation_df[match(sample_names, rownames(annotation_df)), , drop = FALSE]
-    rownames(annotation_df) <- sample_names
-  }
-
-  annotation_colors <- NULL
-  if ("population" %in% colnames(annotation_df)) {
-    annotation_colors <- exp383_population_annotation_colors()
-  }
-
-  exp383_open_png_device(output_file, width = 9, height = 8)
-  if (ncol(annotation_df) == 0) {
-    pheatmap::pheatmap(
-      sample_dist_matrix,
-      main = "Sample-to-sample distances"
-    )
-  } else {
-    pheatmap::pheatmap(
-      sample_dist_matrix,
-      annotation_col = annotation_df,
-      annotation_row = annotation_df,
-      annotation_colors = annotation_colors,
-      main = "Sample-to-sample distances"
-    )
-  }
-  grDevices::dev.off()
-}
-
-save_dispersion_plot <- function(dds, output_file) {
-  exp383_open_png_device(output_file, width = 7, height = 5.5)
-  DESeq2::plotDispEsts(dds)
-  grDevices::dev.off()
-}
-
-save_size_factor_plot <- function(size_factor_table, output_file) {
-  p <- ggplot2::ggplot(
-    size_factor_table,
-    ggplot2::aes(x = reorder(sample, size_factor), y = size_factor, fill = group_assignment)
-  ) +
-    ggplot2::geom_col(show.legend = TRUE) +
-    ggplot2::coord_flip() +
-    exp383_theme(base_size = 10) +
-    ggplot2::labs(
-      title = "DESeq2 size factors",
-      x = "Sample",
-      y = "Size factor"
-    )
-
-  exp383_save_ggplot(output_file, plot = p, width = 7, height = 10)
-}
-
-save_pca_scree_plot <- function(pc_variance_table, n_selected_pcs, variance_threshold, output_file) {
+save_pca_scree_plot <- function(pc_variance_table, n_selected_pcs, variance_threshold, output_file, population = NULL) {
   threshold_percent <- 100 * variance_threshold
   p <- ggplot2::ggplot(pc_variance_table, ggplot2::aes(x = pc_index, y = variance_percent)) +
     ggplot2::geom_col(fill = "#3b6fb6") +
@@ -367,9 +319,12 @@ save_pca_scree_plot <- function(pc_variance_table, n_selected_pcs, variance_thre
     ggplot2::geom_point(ggplot2::aes(y = cumulative_variance_percent), color = "#b22222") +
     ggplot2::geom_vline(xintercept = n_selected_pcs + 0.5, linetype = 2, color = "grey40") +
     exp383_theme(base_size = 12) +
-    ggplot2::scale_x_continuous(breaks = pc_variance_table$pc_index) +
+    ggplot2::scale_x_continuous(
+      breaks = pc_variance_table$pc_index,
+      guide = ggplot2::guide_axis(angle = 90)
+    ) +
     ggplot2::labs(
-      title = "Blind PCA scree plot",
+      title = prefix_plot_title(population, "Blind PCA scree plot"),
       subtitle = sprintf(
         "Selected PCs explain at least %.0f%% cumulative variance (%d PCs retained)",
         threshold_percent,
@@ -377,12 +332,16 @@ save_pca_scree_plot <- function(pc_variance_table, n_selected_pcs, variance_thre
       ),
       x = "Principal component",
       y = "Variance explained (%)"
+    ) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(vjust = 0.5, hjust = 1),
+      plot.margin = ggplot2::margin(t = 8, r = 12, b = 12, l = 8)
     )
 
-  exp383_save_ggplot(output_file, plot = p, width = 8, height = 5)
+  exp383_save_ggplot(output_file, plot = p, width = 10, height = 5)
 }
 
-save_numeric_correlation_heatmap <- function(coldata, registry, output_file) {
+save_numeric_correlation_heatmap <- function(coldata, registry, output_file, population = NULL) {
   numeric_covariates <- registry$analysis_column[
     registry$include_in_formal_model &
       registry$is_candidate &
@@ -402,14 +361,18 @@ save_numeric_correlation_heatmap <- function(coldata, registry, output_file) {
   exp383_open_png_device(output_file, width = 9, height = 8)
   pheatmap::pheatmap(
     correlation_matrix,
-    main = "Spearman correlations among retained technical numeric covariates",
+    main = paste(
+      prefix_plot_title(population, "Spearman correlations among retained technical numeric covariates"),
+      "Variables shown after collinearity pruning.",
+      sep = "\n"
+    ),
     color = grDevices::colorRampPalette(c("#2166ac", "white", "#b2182b"))(100),
     breaks = seq(-1, 1, length.out = 101)
   )
   grDevices::dev.off()
 }
 
-save_metric_barplot <- function(plot_table, metric_column, title_text, y_label, output_file) {
+save_metric_barplot <- function(plot_table, metric_column, title_text, y_label, output_file, subtitle_text = NULL, population = NULL) {
   plot_table <- plot_table[!is.na(plot_table[[metric_column]]), , drop = FALSE]
   if (nrow(plot_table) == 0) {
     return(invisible(NULL))
@@ -424,7 +387,8 @@ save_metric_barplot <- function(plot_table, metric_column, title_text, y_label, 
     exp383_theme(base_size = 11) +
     ggplot2::scale_fill_manual(values = c("TRUE" = "#16a829", "FALSE" = "#bdbdbd")) +
     ggplot2::labs(
-      title = title_text,
+      title = prefix_plot_title(population, title_text),
+      subtitle = subtitle_text,
       x = "Covariate",
       y = y_label,
       fill = "Selected"
@@ -433,12 +397,426 @@ save_metric_barplot <- function(plot_table, metric_column, title_text, y_label, 
   exp383_save_ggplot(output_file, plot = p, width = 8, height = 6)
 }
 
-save_variance_partition_plot <- function(varpart_object, output_file) {
-  exp383_open_png_device(output_file, width = 9, height = 7)
+save_variance_partition_plot <- function(varpart_object, output_file, population = NULL) {
+  exp383_open_png_device(output_file, width = 10, height = 8)
   plot_object <- variancePartition::sortCols(varpart_object) |>
-    variancePartition::plotVarPart(label.angle = 60)
+    variancePartition::plotVarPart(label.angle = 90)
+  plot_object <- plot_object +
+    ggplot2::labs(
+      title = prefix_plot_title(population, "Multivariate variancePartition by gene"),
+      subtitle = "Gene-level variance explained by each model term."
+    ) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.5, hjust = 1),
+      plot.margin = ggplot2::margin(t = 12, r = 12, b = 32, l = 12)
+    )
   print(plot_object)
   grDevices::dev.off()
+}
+
+# -------------------------------------------------
+# Selected covariate balance against biology plots
+# -------------------------------------------------
+# These helpers check whether selected technical covariates are distributed
+# unevenly across the biological variables used to define the DEA contrasts.
+exp383_inoculum_levels <- c("RML", "ME7", "22L", "CBH")
+exp383_dpi_levels <- c("60", "90", "120")
+
+exp383_group_assignment_levels <- as.vector(outer(
+  exp383_inoculum_levels,
+  exp383_dpi_levels,
+  FUN = function(inoculum, dpi) paste0("group_", inoculum, "_", dpi)
+))
+
+exp383_group_assignment_palette <- stats::setNames(
+  set3_palette(length(exp383_group_assignment_levels)),
+  exp383_group_assignment_levels
+)
+
+exp383_inoculum_palette <- c(
+  "RML" = "#8DD3C7",
+  "ME7" = "#FB8072",
+  "22L" = "#B3DE69",
+  "CBH" = "#FDB462"
+)
+
+exp383_dpi_palette <- c(
+  "60" = "#6A3D9A",
+  "90" = "#E31A1C",
+  "120" = "#FF7F00"
+)
+
+sanitize_filename <- function(x) {
+  x <- gsub("[^A-Za-z0-9_]+", "_", x)
+  gsub("_+", "_", x)
+}
+
+order_known_levels <- function(values, preferred_levels) {
+  observed <- unique(as.character(values[!is.na(values)]))
+  c(intersect(preferred_levels, observed), sort(setdiff(observed, preferred_levels)))
+}
+
+format_group_assignment_label <- function(x) {
+  x <- sub("^group_", "", x)
+  gsub("_", " ", x)
+}
+
+extract_group_assignment_parts <- function(group_assignment) {
+  stripped <- sub("^group_", "", as.character(group_assignment))
+  parts <- strsplit(stripped, "_", fixed = TRUE)
+  data.frame(
+    inoculum = vapply(parts, `[`, character(1), 1),
+    dpi = vapply(parts, `[`, character(1), 2),
+    stringsAsFactors = FALSE
+  )
+}
+
+get_selected_technical_covariates <- function(selection_metrics) {
+  selected <- selection_metrics[
+    selection_metrics$is_candidate & selection_metrics$selected,
+    c("covariate", "analysis_column", "data_type"),
+    drop = FALSE
+  ]
+  selected[order(selected$data_type, selected$covariate), , drop = FALSE]
+}
+
+biological_covariate_table <- function(coldata) {
+  data.frame(
+    biological_variable = c("group_assignment", "dpi", "inoculum"),
+    analysis_column = c("group_assignment", "dpi", "inoculum"),
+    data_type = "categorical",
+    stringsAsFactors = FALSE
+  )
+}
+
+ordered_biological_values <- function(x, biological_variable) {
+  if (biological_variable == "group_assignment") {
+    levels <- order_known_levels(x, exp383_group_assignment_levels)
+    return(factor(as.character(x), levels = levels))
+  }
+
+  if (biological_variable == "dpi") {
+    levels <- order_known_levels(as.character(x), exp383_dpi_levels)
+    return(factor(as.character(x), levels = levels))
+  }
+
+  if (biological_variable == "inoculum") {
+    levels <- order_known_levels(x, exp383_inoculum_levels)
+    return(factor(as.character(x), levels = levels))
+  }
+
+  factor(as.character(x))
+}
+
+build_selected_covariate_biology_associations <- function(coldata, selection_metrics) {
+  selected_covariates <- get_selected_technical_covariates(selection_metrics)
+  biological_covariates <- biological_covariate_table(coldata)
+
+  empty_result <- data.frame(
+    covariate = character(),
+    analysis_column = character(),
+    covariate_type = character(),
+    biological_variable = character(),
+    biological_column = character(),
+    n_complete = integer(),
+    test_name = character(),
+    effect_size_name = character(),
+    effect_size = numeric(),
+    effect_size_abs = numeric(),
+    statistic = numeric(),
+    p_value = numeric(),
+    padj = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(selected_covariates) == 0) {
+    return(empty_result)
+  }
+
+  results <- list()
+  result_index <- 1L
+  for (i in seq_len(nrow(selected_covariates))) {
+    covariate_row <- selected_covariates[i, , drop = FALSE]
+
+    for (j in seq_len(nrow(biological_covariates))) {
+      biological_row <- biological_covariates[j, , drop = FALSE]
+      biological_values <- ordered_biological_values(
+        coldata[[biological_row$analysis_column]],
+        biological_row$biological_variable
+      )
+
+      association <- pairwise_covariate_association(
+        x = coldata[[covariate_row$analysis_column]],
+        y = biological_values,
+        x_name = covariate_row$covariate,
+        y_name = biological_row$biological_variable,
+        x_type = covariate_row$data_type,
+        y_type = biological_row$data_type
+      )
+
+      results[[result_index]] <- data.frame(
+        covariate = covariate_row$covariate,
+        analysis_column = covariate_row$analysis_column,
+        covariate_type = covariate_row$data_type,
+        biological_variable = biological_row$biological_variable,
+        biological_column = biological_row$analysis_column,
+        n_complete = association$n_complete,
+        test_name = association$test_name,
+        effect_size_name = association$effect_size_name,
+        effect_size = association$effect_size,
+        effect_size_abs = association$effect_size_abs,
+        statistic = association$statistic,
+        p_value = association$p_value,
+        padj = NA_real_,
+        stringsAsFactors = FALSE
+      )
+      result_index <- result_index + 1L
+    }
+  }
+
+  association_table <- do.call(rbind, results)
+  association_table$padj <- stats::p.adjust(association_table$p_value, method = "fdr")
+  association_table
+}
+
+build_selected_numeric_covariate_biology_data <- function(coldata, selection_metrics) {
+  selected_covariates <- get_selected_technical_covariates(selection_metrics)
+  selected_covariates <- selected_covariates[selected_covariates$data_type == "numeric", , drop = FALSE]
+
+  empty_result <- data.frame(
+    sample = character(),
+    covariate = character(),
+    analysis_column = character(),
+    covariate_value = numeric(),
+    group_assignment = character(),
+    dpi = character(),
+    inoculum = character(),
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(selected_covariates) == 0) {
+    return(empty_result)
+  }
+
+  sample_ids <- if ("sample" %in% colnames(coldata)) coldata$sample else rownames(coldata)
+  results <- lapply(seq_len(nrow(selected_covariates)), function(i) {
+    covariate_row <- selected_covariates[i, , drop = FALSE]
+    data.frame(
+      sample = as.character(sample_ids),
+      covariate = covariate_row$covariate,
+      analysis_column = covariate_row$analysis_column,
+      covariate_value = as.numeric(coldata[[covariate_row$analysis_column]]),
+      group_assignment = as.character(coldata$group_assignment),
+      dpi = as.character(coldata$dpi),
+      inoculum = as.character(coldata$inoculum),
+      stringsAsFactors = FALSE
+    )
+  })
+
+  do.call(rbind, results)
+}
+
+build_selected_categorical_covariate_biology_data <- function(coldata, selection_metrics) {
+  selected_covariates <- get_selected_technical_covariates(selection_metrics)
+  selected_covariates <- selected_covariates[selected_covariates$data_type == "categorical", , drop = FALSE]
+  biological_covariates <- biological_covariate_table(coldata)
+
+  empty_result <- data.frame(
+    covariate = character(),
+    analysis_column = character(),
+    biological_variable = character(),
+    biological_value = character(),
+    covariate_value = character(),
+    n_samples = integer(),
+    biological_group_n = integer(),
+    proportion_within_biological_group = numeric(),
+    stringsAsFactors = FALSE
+  )
+
+  if (nrow(selected_covariates) == 0) {
+    return(empty_result)
+  }
+
+  results <- list()
+  result_index <- 1L
+  for (i in seq_len(nrow(selected_covariates))) {
+    covariate_row <- selected_covariates[i, , drop = FALSE]
+
+    for (j in seq_len(nrow(biological_covariates))) {
+      biological_row <- biological_covariates[j, , drop = FALSE]
+      biological_values <- ordered_biological_values(
+        coldata[[biological_row$analysis_column]],
+        biological_row$biological_variable
+      )
+      covariate_values <- factor(as.character(coldata[[covariate_row$analysis_column]]))
+
+      count_table <- as.data.frame.matrix(table(biological_values, covariate_values))
+      biological_group_n <- rowSums(count_table)
+
+      for (biological_value in rownames(count_table)) {
+        for (covariate_value in colnames(count_table)) {
+          n_samples <- count_table[biological_value, covariate_value]
+          group_n <- biological_group_n[[biological_value]]
+          results[[result_index]] <- data.frame(
+            covariate = covariate_row$covariate,
+            analysis_column = covariate_row$analysis_column,
+            biological_variable = biological_row$biological_variable,
+            biological_value = biological_value,
+            covariate_value = covariate_value,
+            n_samples = as.integer(n_samples),
+            biological_group_n = as.integer(group_n),
+            proportion_within_biological_group = if (group_n > 0) n_samples / group_n else NA_real_,
+            stringsAsFactors = FALSE
+          )
+          result_index <- result_index + 1L
+        }
+      }
+    }
+  }
+
+  do.call(rbind, results)
+}
+
+save_selected_numeric_covariate_biology_plot <- function(plot_data, biological_variable, output_file, population = NULL) {
+  if (nrow(plot_data) == 0) {
+    return(invisible(NULL))
+  }
+
+  plot_data <- plot_data[!is.na(plot_data$covariate_value), , drop = FALSE]
+  if (nrow(plot_data) == 0) {
+    return(invisible(NULL))
+  }
+
+  plot_data$biological_value <- ordered_biological_values(
+    plot_data[[biological_variable]],
+    biological_variable
+  )
+
+  x_label <- switch(
+    biological_variable,
+    group_assignment = "Group assignment",
+    dpi = "DPI",
+    inoculum = "Inoculum",
+    biological_variable
+  )
+
+  p <- ggplot2::ggplot(
+    plot_data,
+    ggplot2::aes(x = biological_value, y = covariate_value, fill = biological_value)
+  ) +
+    ggplot2::geom_boxplot(outlier.shape = NA, colour = "grey35", alpha = 0.82, show.legend = FALSE) +
+    ggplot2::geom_jitter(width = 0.16, height = 0, size = 1.6, alpha = 0.72, colour = "#1f1f1f") +
+    ggplot2::facet_wrap(~covariate, scales = "free_y", ncol = 2) +
+    exp383_theme(base_size = 11) +
+    ggplot2::labs(
+      title = prefix_plot_title(population, sprintf("Selected numeric technical covariates by %s", x_label)),
+      subtitle = sprintf("Z-scored selected technical covariates grouped by %s.", x_label),
+      x = x_label,
+      y = "Z-scored covariate value"
+    ) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(angle = 90, vjust = 0.5, hjust = 1),
+      plot.margin = ggplot2::margin(t = 8, r = 12, b = 18, l = 8)
+    )
+
+  fill_levels <- levels(plot_data$biological_value)
+  fill_values <- switch(
+    biological_variable,
+    group_assignment = exp383_group_assignment_palette[fill_levels],
+    dpi = exp383_dpi_palette[fill_levels],
+    inoculum = exp383_inoculum_palette[fill_levels],
+    stats::setNames(set3_palette(length(fill_levels)), fill_levels)
+  )
+
+  p <- p + ggplot2::scale_fill_manual(values = fill_values, drop = FALSE, guide = "none")
+
+  plot_width <- if (biological_variable == "group_assignment") 11 else 8
+  if (biological_variable == "group_assignment") {
+    p <- p + ggplot2::scale_x_discrete(labels = format_group_assignment_label)
+  }
+
+  exp383_save_ggplot(output_file, plot = p, width = plot_width, height = 6.5)
+}
+
+save_selected_categorical_covariate_group_heatmaps <- function(count_data, output_dir, population = NULL) {
+  group_data <- count_data[count_data$biological_variable == "group_assignment", , drop = FALSE]
+  if (nrow(group_data) == 0) {
+    return(invisible(NULL))
+  }
+
+  covariates <- unique(group_data$covariate)
+  for (covariate_name in covariates) {
+    covariate_data <- group_data[group_data$covariate == covariate_name, , drop = FALSE]
+    row_order <- order_known_levels(covariate_data$biological_value, exp383_group_assignment_levels)
+    column_order <- sort(unique(covariate_data$covariate_value))
+
+    heatmap_matrix <- matrix(
+      NA_real_,
+      nrow = length(row_order),
+      ncol = length(column_order),
+      dimnames = list(row_order, column_order)
+    )
+
+    for (i in seq_len(nrow(covariate_data))) {
+      heatmap_matrix[
+        covariate_data$biological_value[[i]],
+        covariate_data$covariate_value[[i]]
+      ] <- covariate_data$proportion_within_biological_group[[i]]
+    }
+
+    row_parts <- extract_group_assignment_parts(rownames(heatmap_matrix))
+    row_annotation <- data.frame(
+      inoculum = factor(row_parts$inoculum, levels = exp383_inoculum_levels),
+      dpi = factor(row_parts$dpi, levels = exp383_dpi_levels),
+      stringsAsFactors = FALSE
+    )
+    rownames(row_annotation) <- rownames(heatmap_matrix)
+
+    # Match the proteomics EDA heatmap convention: fixed row order, no
+    # clustering, visible group gaps, fixed annotation colours, and black NA.
+    dpi_group_sizes <- table(row_annotation$dpi)
+    row_gaps <- cumsum(as.integer(dpi_group_sizes))
+    row_gaps <- row_gaps[row_gaps < nrow(heatmap_matrix)]
+
+    annotation_colors <- list(
+      inoculum = exp383_inoculum_palette[exp383_inoculum_levels],
+      dpi = exp383_dpi_palette[exp383_dpi_levels]
+    )
+
+    display_matrix <- heatmap_matrix
+    rownames(display_matrix) <- format_group_assignment_label(rownames(display_matrix))
+    rownames(row_annotation) <- rownames(display_matrix)
+
+    pheat <- pheatmap::pheatmap(
+      display_matrix,
+      cluster_rows = FALSE,
+      cluster_cols = FALSE,
+      show_colnames = TRUE,
+      show_rownames = TRUE,
+      fontsize_row = 8,
+      fontsize_col = 9,
+      main = paste(
+        prefix_plot_title(population, sprintf("%s by group assignment", covariate_name)),
+        "Cell values are row proportions within group assignment.",
+        sep = "\n"
+      ),
+      annotation_row = row_annotation,
+      annotation_colors = annotation_colors,
+      annotation_names_row = FALSE,
+      gaps_row = row_gaps,
+      na_col = "black",
+      silent = TRUE
+    )
+
+    output_file <- file.path(
+      output_dir,
+      sprintf("selected_categorical_covariate_by_group_assignment_%s.png", sanitize_filename(covariate_name))
+    )
+    exp383_open_png_device(output_file, width = 9, height = 7)
+    grid::grid.newpage()
+    grid::grid.draw(pheat$gtable)
+    grDevices::dev.off()
+  }
 }
 
 # ----------------------------
@@ -983,37 +1361,4 @@ build_recommended_design_formula <- function(selection_metrics) {
   selected_model_columns <- selection_metrics$analysis_column[selection_metrics$selected]
   design_terms <- unique(c("group_assignment", selected_model_columns))
   paste("~", paste(design_terms, collapse = " + "))
-}
-
-load_design_table <- function(design_tsv) {
-  stop_if_missing(design_tsv, "Design TSV")
-
-  design_table <- read.delim(design_tsv, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
-  required_columns <- c("design_id", "design_formula")
-  missing_columns <- setdiff(required_columns, colnames(design_table))
-  if (length(missing_columns) > 0) {
-    stop(
-      sprintf("Design TSV must contain columns: %s", paste(required_columns, collapse = ", ")),
-      call. = FALSE
-    )
-  }
-
-  design_table$design_id <- vapply(design_table$design_id, sanitize_design_id, character(1))
-  design_table
-}
-
-append_recommended_design <- function(design_table, recommended_formula) {
-  recommended_id <- "selected_covariates"
-  if (any(design_table$design_formula == recommended_formula)) {
-    return(design_table)
-  }
-
-  rbind(
-    data.frame(
-      design_id = recommended_id,
-      design_formula = recommended_formula,
-      stringsAsFactors = FALSE
-    ),
-    design_table
-  )
 }
